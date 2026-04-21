@@ -1,0 +1,26 @@
+{
+  "name": "freeq-obsidian",
+  "version": "0.1.0",
+  "description": "FreeQ IRC plugin for Obsidian",
+  "main": "main.js",
+  "scripts": {
+    "dev": "node esbuild.config.mjs production",
+    "build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
+    "package": "npm run build && mkdir -p dist && cp main.js manifest.json styles.css dist/",
+    "install-to-vault": "npm run package && cp dist/* \"$OBSIDIAN_VAULT_PATH/.obsidian/plugins/freeq-chat/\""
+  },
+  "keywords": [
+    "obsidian",
+    "plugin",
+    "irc",
+    "chat"
+  ],
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "builtin-modules": "4.0.0",
+    "esbuild": "0.25.0",
+    "obsidian": "latest",
+    "tslib": "^2.6.0",
+    "typescript": "^5.7.0"
+  }
+}
