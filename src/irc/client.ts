@@ -698,24 +698,25 @@ export class IRCClient {
   }
 
   private sendSaslResponse(challenge?: string) {
-    // Decode server's challenge (base64 JSON with session_id, nonce, timestamp)
-    let extra: Record<string, string> = {};
+    // Extract nonce from server's challenge (base64 JSON)
+    let challengeNonce: string | undefined;
     if (challenge && challenge !== "+") {
       try {
         const json = atob(challenge);
         const parsed = JSON.parse(json);
-        if (parsed.session_id) extra.session_id = parsed.session_id;
-        if (parsed.nonce) extra.nonce = parsed.nonce;
-        if (parsed.timestamp) extra.timestamp = parsed.timestamp;
+        challengeNonce = parsed.nonce;
       } catch {
         // ignore invalid challenge
       }
     }
+    // Match server's SaslResponse struct exactly:
+    // { did, method, signature, pds_url, challenge_nonce }
     const payload = JSON.stringify({
       did: this.saslDid,
       method: this.saslMethod || "pds-session",
       signature: this.saslToken,
-      ...extra,
+      pds_url: "",
+      challenge_nonce: challengeNonce,
     });
     const encoded = btoa(payload);
     // Send in 400-byte chunks

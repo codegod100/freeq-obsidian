@@ -904,14 +904,12 @@ var IRCClient = class {
     this.raw("AUTHENTICATE ATPROTO-CHALLENGE");
   }
   sendSaslResponse(challenge) {
-    let extra = {};
+    let challengeNonce;
     if (challenge && challenge !== "+") {
       try {
         const json = atob(challenge);
         const parsed = JSON.parse(json);
-        if (parsed.session_id) extra.session_id = parsed.session_id;
-        if (parsed.nonce) extra.nonce = parsed.nonce;
-        if (parsed.timestamp) extra.timestamp = parsed.timestamp;
+        challengeNonce = parsed.nonce;
       } catch {
       }
     }
@@ -919,7 +917,8 @@ var IRCClient = class {
       did: this.saslDid,
       method: this.saslMethod || "pds-session",
       signature: this.saslToken,
-      ...extra
+      pds_url: "",
+      challenge_nonce: challengeNonce
     });
     const encoded = btoa(payload);
     for (let i = 0; i < encoded.length; i += 400) {
