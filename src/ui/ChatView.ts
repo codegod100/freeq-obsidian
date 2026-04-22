@@ -149,6 +149,8 @@ export class ChatView extends ItemView {
         break;
       case "authError":
         new Notice(`FreeQ auth error: ${ev.message}`);
+        this.statusEl.setText(`Auth failed: ${ev.message}`);
+        this.inputEl.placeholder = "Authentication failed — check settings";
         break;
       case "channelUpdated":
         this.renderChannelList();
@@ -196,11 +198,13 @@ export class ChatView extends ItemView {
     const map: Record<string, string> = {
       disconnected: "Disconnected",
       connecting: "Connecting…",
-      connected: "Connected",
+      connected: "Authenticating…",
     };
     this.statusEl.setText(map[state] || state);
-    if (state === "connected") {
+    if (state === "connected" || state === "registered") {
       this.statusEl.addClass("freeq-status-connected");
+      // Enable input so user can type commands even before registration
+      this.inputEl.disabled = false;
     } else {
       this.statusEl.removeClass("freeq-status-connected");
     }

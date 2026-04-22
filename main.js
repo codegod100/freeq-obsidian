@@ -277,7 +277,10 @@ var Transport = class _Transport {
       const data = typeof e.data === "string" ? e.data : "";
       for (const line of data.split("\n")) {
         const trimmed = line.replace(/\r$/, "");
-        if (trimmed) this.opts.onLine(trimmed);
+        if (trimmed) {
+          console.log("[transport] \u2190", trimmed);
+          this.opts.onLine(trimmed);
+        }
       }
     };
     this.ws.onclose = () => {
@@ -297,6 +300,7 @@ var Transport = class _Transport {
         this.ws.close();
         return;
       }
+      console.log("[transport] \u2192", line.trim());
       this.ws.send(line);
     } else {
       console.warn("[transport] Dropped message (ws not open, readyState=%s):", this.ws?.readyState, line);
@@ -438,12 +442,14 @@ var IRCClient = class {
   }
   sendRegistration() {
     this.ackedCaps = /* @__PURE__ */ new Set();
+    console.log("[irc] sendRegistration", this.desiredNick, "sasl:", this.saslMethod || "none");
     this.raw("CAP LS 302");
     this.raw(`NICK ${this.desiredNick}`);
     this.raw(`USER ${this.desiredNick} 0 * :FreeQ Obsidian`);
   }
   // ── Sending ──
   raw(line) {
+    console.log("[irc] raw \u2192", line);
     this.transport?.send(line + "\r\n");
   }
   sendPrivmsg(target, text) {
@@ -544,7 +550,9 @@ var IRCClient = class {
   }
   // ── Receiving ──
   async handleLine(line) {
+    console.log("[irc] handleLine", line.slice(0, 120));
     const m = parse(line);
+    console.log("[irc] parsed cmd=", m.command, "prefix=", m.prefix);
     switch (m.command) {
       case "PING": {
         const payload = m.params[0] || "";
@@ -1076,6 +1084,8 @@ var ChatView = class extends import_obsidian3.ItemView {
         break;
       case "authError":
         new import_obsidian3.Notice(`FreeQ auth error: ${ev.message}`);
+        this.statusEl.setText(`Auth failed: ${ev.message}`);
+        this.inputEl.placeholder = "Authentication failed \u2014 check settings";
         break;
       case "channelUpdated":
         this.renderChannelList();
@@ -1119,11 +1129,12 @@ var ChatView = class extends import_obsidian3.ItemView {
     const map = {
       disconnected: "Disconnected",
       connecting: "Connecting\u2026",
-      connected: "Connected"
+      connected: "Authenticating\u2026"
     };
     this.statusEl.setText(map[state] || state);
-    if (state === "connected") {
+    if (state === "connected" || state === "registered") {
       this.statusEl.addClass("freeq-status-connected");
+      this.inputEl.disabled = false;
     } else {
       this.statusEl.removeClass("freeq-status-connected");
     }
@@ -1369,6 +1380,8 @@ var Clipper = class {
     this.app = app;
     this.settings = settings;
   }
+  app;
+  settings;
   async clip(context) {
     const { channel, msg } = context;
     const timestamp = (0, import_obsidian4.moment)(msg.timestamp).format("YYYY-MM-DD HH:mm:ss");
@@ -1810,9 +1823,17 @@ var FreeQPlugin = class extends import_obsidian6.Plugin {
     await this.saveSettings();
   }
   // ── Connection ──
+  isConnecting = false;
+  registrationTimer = null;
   async connect() {
+    if (this.isConnecting) {
+      new import_obsidian6.Notice("Connection already in progress.");
+      return;
+    }
+    this.isConnecting = true;
     const { serverUrl, nick, oauthSession, did, appPassword, pdsUrl, brokerUrl } = this.settings;
     if (!serverUrl) {
+      this.isConnecting = false;
       new import_obsidian6.Notice("FreeQ server URL is not configured.");
       return;
     }
@@ -1827,12 +1848,14 @@ var FreeQPlugin = class extends import_obsidian6.Plugin {
       try {
         const session = await this.createPdsSession(did, appPassword, pdsUrl);
         if (!session) {
+          this.isConnecting = false;
           new import_obsidian6.Notice("Failed to authenticate with PDS. Check your credentials.");
           return;
         }
         token = session.accessJwt;
         method = "pds-session";
       } catch (e) {
+        this.isConnecting = false;
         console.error("[freeq] PDS auth error:", e);
         new import_obsidian6.Notice("PDS authentication failed.");
         return;
@@ -1844,9 +1867,17 @@ var FreeQPlugin = class extends import_obsidian6.Plugin {
         "Connecting as guest \u2014 configure OAuth or App Password in settings to authenticate."
       );
     }
-    const autoJoinUnsub = this.client.addListener((ev) => {
-      if (ev.type === "registered") {
-        autoJoinUnsub();
+    if (this.registrationTimer) {
+      clearTimeout(this.registrationTimer);
+      this.registrationTimer = null;
+    }
+    this.client.addListener((ev) => {
+      if (ev.type === "registered" && this.client.isConnected() && this.client.channels.size === 0) {
+        this.isConnecting = false;
+        if (this.registrationTimer) {
+          clearTimeout(this.registrationTimer);
+          this.registrationTimer = null;
+        }
         const channels = (this.settings.autoJoinChannels || "#general").split(",").map((c) => c.trim()).filter(Boolean);
         console.log("[freeq] auto-joining channels:", channels);
         for (const ch of channels) {
@@ -1857,12 +1888,35 @@ var FreeQPlugin = class extends import_obsidian6.Plugin {
           this.client.activeChannel = channels[0];
         }
       }
+      if (ev.type === "state") {
+        if (ev.state === "connected") {
+          this.isConnecting = false;
+          if (this.registrationTimer) clearTimeout(this.registrationTimer);
+          this.registrationTimer = setTimeout(() => {
+            if (!this.client.isConnected()) {
+              console.log("[freeq] Registration timeout \u2014 001 never received");
+              new import_obsidian6.Notice("Server connected but never sent registration confirmation. Try reconnecting.");
+            }
+          }, 15e3);
+        } else if (ev.state === "disconnected") {
+          this.isConnecting = false;
+          if (this.registrationTimer) {
+            clearTimeout(this.registrationTimer);
+            this.registrationTimer = null;
+          }
+        }
+      }
     });
     console.log("[freeq] connecting to", serverUrl, "as", desiredNick, "method", method, "did", effectiveDid);
     this.client.connect(serverUrl, desiredNick, token, effectiveDid, method);
     new import_obsidian6.Notice("Connecting to FreeQ\u2026");
   }
   disconnect() {
+    this.isConnecting = false;
+    if (this.registrationTimer) {
+      clearTimeout(this.registrationTimer);
+      this.registrationTimer = null;
+    }
     this.client.disconnect();
     new import_obsidian6.Notice("Disconnected from FreeQ.");
   }

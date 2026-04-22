@@ -50,7 +50,10 @@ export class Transport {
       const data = typeof e.data === 'string' ? e.data : '';
       for (const line of data.split('\n')) {
         const trimmed = line.replace(/\r$/, '');
-        if (trimmed) this.opts.onLine(trimmed);
+        if (trimmed) {
+          console.log('[transport] ←', trimmed);
+          this.opts.onLine(trimmed);
+        }
       }
     };
 
@@ -75,6 +78,7 @@ export class Transport {
         this.ws.close();
         return;
       }
+      console.log('[transport] →', line.trim());
       this.ws.send(line);
     } else {
       console.warn('[transport] Dropped message (ws not open, readyState=%s):', this.ws?.readyState, line);

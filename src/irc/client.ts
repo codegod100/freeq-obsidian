@@ -177,6 +177,7 @@ export class IRCClient {
 
   private sendRegistration() {
     this.ackedCaps = new Set();
+    console.log("[irc] sendRegistration", this.desiredNick, "sasl:", this.saslMethod || "none");
     this.raw("CAP LS 302");
     this.raw(`NICK ${this.desiredNick}`);
     this.raw(`USER ${this.desiredNick} 0 * :FreeQ Obsidian`);
@@ -185,6 +186,7 @@ export class IRCClient {
   // ── Sending ──
 
   raw(line: string) {
+    console.log("[irc] raw →", line);
     this.transport?.send(line + "\r\n");
   }
 
@@ -301,7 +303,9 @@ export class IRCClient {
   // ── Receiving ──
 
   private async handleLine(line: string) {
+    console.log("[irc] handleLine", line.slice(0, 120));
     const m = parse(line);
+    console.log("[irc] parsed cmd=", m.command, "prefix=", m.prefix);
 
     switch (m.command) {
       case "PING": {

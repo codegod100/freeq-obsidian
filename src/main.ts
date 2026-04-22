@@ -135,9 +135,19 @@ export default class FreeQPlugin extends Plugin {
 
   // ── Connection ──
 
+  private isConnecting = false;
+  private registrationTimer: ReturnType<typeof setTimeout> | null = null;
+
   async connect() {
+    if (this.isConnecting) {
+      new Notice("Connection already in progress.");
+      return;
+    }
+    this.isConnecting = true;
+
     const { serverUrl, nick, oauthSession, did, appPassword, pdsUrl, brokerUrl } = this.settings;
     if (!serverUrl) {
+      this.isConnecting = false;
       new Notice("FreeQ server URL is not configured.");
       return;
     }
@@ -157,12 +167,14 @@ export default class FreeQPlugin extends Plugin {
       try {
         const session = await this.createPdsSession(did, appPassword, pdsUrl);
         if (!session) {
+          this.isConnecting = false;
           new Notice("Failed to authenticate with PDS. Check your credentials.");
           return;
         }
         token = session.accessJwt;
         method = "pds-session";
       } catch (e) {
+        this.isConnecting = false;
         console.error("[freeq] PDS auth error:", e);
         new Notice("PDS authentication failed.");
         return;
@@ -178,9 +190,20 @@ export default class FreeQPlugin extends Plugin {
       );
     }
 
-    const autoJoinUnsub = this.client.addListener((ev) => {
-      if (ev.type === "registered") {
-        autoJoinUnsub();
+    // Clear any stale registration timeout
+    if (this.registrationTimer) {
+      clearTimeout(this.registrationTimer);
+      this.registrationTimer = null;
+    }
+
+    // Persistent auto-join listener — survives reconnects
+    this.client.addListener((ev) => {
+      if (ev.type === "registered" && this.client.isConnected() && this.client.channels.size === 0) {
+        this.isConnecting = false;
+        if (this.registrationTimer) {
+          clearTimeout(this.registrationTimer);
+          this.registrationTimer = null;
+        }
         const channels = (this.settings.autoJoinChannels || "#general")
           .split(",")
           .map((c) => c.trim())
@@ -194,6 +217,25 @@ export default class FreeQPlugin extends Plugin {
           this.client.activeChannel = channels[0];
         }
       }
+      if (ev.type === "state") {
+        if (ev.state === "connected") {
+          this.isConnecting = false;
+          // Start registration timeout guard
+          if (this.registrationTimer) clearTimeout(this.registrationTimer);
+          this.registrationTimer = setTimeout(() => {
+            if (!this.client.isConnected()) {
+              console.log("[freeq] Registration timeout — 001 never received");
+              new Notice("Server connected but never sent registration confirmation. Try reconnecting.");
+            }
+          }, 15000);
+        } else if (ev.state === "disconnected") {
+          this.isConnecting = false;
+          if (this.registrationTimer) {
+            clearTimeout(this.registrationTimer);
+            this.registrationTimer = null;
+          }
+        }
+      }
     });
 
     console.log("[freeq] connecting to", serverUrl, "as", desiredNick, "method", method, "did", effectiveDid);
@@ -202,6 +244,11 @@ export default class FreeQPlugin extends Plugin {
   }
 
   disconnect() {
+    this.isConnecting = false;
+    if (this.registrationTimer) {
+      clearTimeout(this.registrationTimer);
+      this.registrationTimer = null;
+    }
     this.client.disconnect();
     new Notice("Disconnected from FreeQ.");
   }
