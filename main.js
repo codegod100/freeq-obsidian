@@ -1388,15 +1388,139 @@ ${text}`);
 
 // src/auth/oauth.ts
 var import_obsidian5 = require("obsidian");
+
+// src/auth/local-oauth.ts
+var httpModule = null;
+try {
+  httpModule = require("http");
+} catch {
+}
+function isLocalServerAvailable() {
+  return httpModule !== null;
+}
+async function startLocalOAuthServer(decodeSession, timeoutMs = 5 * 60 * 1e3) {
+  if (!httpModule) {
+    throw new Error("Local HTTP server not available in this environment.");
+  }
+  const server = httpModule.createServer();
+  let callbackResolver = null;
+  let callbackRejecter = null;
+  let callbackTimer = null;
+  let port = 0;
+  const cleanup = () => {
+    if (callbackTimer) {
+      clearTimeout(callbackTimer);
+      callbackTimer = null;
+    }
+    try {
+      server.close();
+    } catch {
+    }
+  };
+  const waitForSession = () => new Promise((resolve, reject) => {
+    callbackResolver = resolve;
+    callbackRejecter = reject;
+  });
+  server.on("request", (req, res) => {
+    const reqUrl = req.url || "";
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+    if (req.method === "OPTIONS") {
+      res.writeHead(200);
+      res.end();
+      return;
+    }
+    if (reqUrl.startsWith("/done")) {
+      const query = new URL(reqUrl, `http://127.0.0.1:${port}`).searchParams;
+      const oauthData = query.get("oauth");
+      res.writeHead(200, { "Content-Type": "text/html" });
+      res.end(`<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Authenticated</title>
+<style>body{font-family:system-ui,sans-serif;background:#1e1e2e;color:#cdd6f4;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;}</style>
+</head><body><div style="text-align:center;"><h1>\u2705 Authenticated</h1><p>You can close this tab and return to Obsidian.</p></div></body></html>`);
+      if (oauthData) {
+        try {
+          const session = decodeSession(oauthData);
+          cleanup();
+          callbackResolver?.(session);
+        } catch (e) {
+          cleanup();
+          callbackRejecter?.(
+            new Error(
+              `Failed to decode session: ${e instanceof Error ? e.message : String(e)}`
+            )
+          );
+        }
+      } else {
+        cleanup();
+        callbackRejecter?.(new Error("No OAuth data received from callback."));
+      }
+      return;
+    }
+    if (reqUrl.startsWith("/callback")) {
+      res.writeHead(200, { "Content-Type": "text/html" });
+      res.end(`<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>FreeQ OAuth</title>
+<style>body{font-family:system-ui,sans-serif;background:#1e1e2e;color:#cdd6f4;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;}</style>
+</head><body>
+<div style="text-align:center;"><h1>Connecting to Obsidian...</h1><div class="spinner" style="margin:2rem auto;width:40px;height:40px;border:4px solid #1e293b;border-top:4px solid #38bdf8;border-radius:50%;animation:spin 1s linear infinite;"></div>
+<p style="color:#94a3b8;">Redirecting...</p></div>
+<style>@keyframes spin{0%{transform:rotate(0deg);}100%{transform:rotate(360deg);}}</style>
+<script>
+(function(){
+  try {
+    const params = new URLSearchParams(window.location.hash.slice(1));
+    const oauth = params.get('oauth');
+    if (!oauth) { document.body.innerHTML = '<div style="text-align:center;"><h1>Error</h1><p>No OAuth data found.</p></div>'; return; }
+    fetch('/done?oauth=' + encodeURIComponent(oauth)).then(function(){
+      document.body.innerHTML = '<div style="text-align:center;"><h1>Authenticated</h1><p style="color:#a6e3a1;">Return to Obsidian.</p></div>';
+    }).catch(function(){
+      document.body.innerHTML = '<div style="text-align:center;"><h1>Error</h1><p>Could not communicate with Obsidian.</p></div>';
+    });
+  } catch(e) {
+    document.body.innerHTML = '<div style="text-align:center;"><h1>Error</h1><p>' + e.message + '</p></div>';
+  }
+})();
+<\/script>
+</body></html>`);
+      return;
+    }
+    res.writeHead(404);
+    res.end("Not found");
+  });
+  return new Promise((resolve, reject) => {
+    server.listen(0, "127.0.0.1", () => {
+      const addr = server.address();
+      if (!addr || typeof addr === "string") {
+        cleanup();
+        reject(new Error("Failed to bind to localhost"));
+        return;
+      }
+      port = addr.port;
+      const url = `http://127.0.0.1:${port}`;
+      callbackTimer = setTimeout(() => {
+        cleanup();
+        callbackRejecter?.(
+          new Error("OAuth callback timed out after 5 minutes")
+        );
+      }, timeoutMs);
+      resolve({ url, waitForSession, cleanup });
+    });
+    server.on("error", (err) => {
+      cleanup();
+      reject(err);
+    });
+  });
+}
+
+// src/auth/oauth.ts
 var OAuthHandler = class {
   callbackResolver = null;
   callbackRejecter = null;
   callbackTimeout = null;
-  async initiate(handle, brokerBase, callbackUrl) {
+  async initiate(handle, brokerBase, fallbackCallbackUrl) {
     this.cancel();
-    const authUrl = `${brokerBase}/auth/login?handle=${encodeURIComponent(
-      handle
-    )}&return_to=${encodeURIComponent(callbackUrl)}`;
     try {
       const check = await (0, import_obsidian5.requestUrl)(`${brokerBase}/health`);
       if (check.status >= 400) {
@@ -1408,6 +1532,42 @@ var OAuthHandler = class {
       }
       throw new Error("Authentication service unreachable.");
     }
+    if (isLocalServerAvailable()) {
+      try {
+        return await this.initiateLocal(handle, brokerBase);
+      } catch (e) {
+        console.warn("[freeq] local OAuth server failed, falling back:", e);
+      }
+    }
+    if (!fallbackCallbackUrl) {
+      throw new Error(
+        "OAuth callback URL is not configured. Set it in FreeQ Chat settings or use App Password."
+      );
+    }
+    return this.initiateExternal(handle, brokerBase, fallbackCallbackUrl);
+  }
+  async initiateLocal(handle, brokerBase) {
+    const { url, waitForSession, cleanup } = await startLocalOAuthServer(
+      this.decodeSession.bind(this)
+    );
+    const callbackUrl = `${url}/callback`;
+    const authUrl = `${brokerBase}/auth/login?handle=${encodeURIComponent(
+      handle
+    )}&return_to=${encodeURIComponent(callbackUrl)}`;
+    window.open(authUrl, "_blank");
+    new import_obsidian5.Notice("Continue login in your browser\u2026");
+    try {
+      const session = await waitForSession();
+      return session;
+    } catch (e) {
+      cleanup();
+      throw e;
+    }
+  }
+  async initiateExternal(handle, brokerBase, callbackUrl) {
+    const authUrl = `${brokerBase}/auth/login?handle=${encodeURIComponent(
+      handle
+    )}&return_to=${encodeURIComponent(callbackUrl)}`;
     const waitForCallback = new Promise((resolve, reject) => {
       this.callbackResolver = resolve;
       this.callbackRejecter = reject;

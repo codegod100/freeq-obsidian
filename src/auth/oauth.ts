@@ -1,4 +1,8 @@
 import { Notice, requestUrl } from "obsidian";
+import {
+  isLocalServerAvailable,
+  startLocalOAuthServer,
+} from "./local-oauth";
 
 export interface OAuthSession {
   did: string;
@@ -18,14 +22,9 @@ export class OAuthHandler {
   async initiate(
     handle: string,
     brokerBase: string,
-    callbackUrl: string
+    fallbackCallbackUrl?: string
   ): Promise<OAuthSession> {
-    // Clear any stale state
     this.cancel();
-
-    const authUrl = `${brokerBase}/auth/login?handle=${encodeURIComponent(
-      handle
-    )}&return_to=${encodeURIComponent(callbackUrl)}`;
 
     // Pre-flight broker health check (requestUrl bypasses CORS)
     try {
@@ -40,11 +39,62 @@ export class OAuthHandler {
       throw new Error("Authentication service unreachable.");
     }
 
+    // Prefer local ephemeral server (desktop) — no external callback URL needed
+    if (isLocalServerAvailable()) {
+      try {
+        return await this.initiateLocal(handle, brokerBase);
+      } catch (e) {
+        console.warn("[freeq] local OAuth server failed, falling back:", e);
+      }
+    }
+
+    // Fallback: external callback URL + obsidian:// protocol handler
+    if (!fallbackCallbackUrl) {
+      throw new Error(
+        "OAuth callback URL is not configured. Set it in FreeQ Chat settings or use App Password."
+      );
+    }
+    return this.initiateExternal(handle, brokerBase, fallbackCallbackUrl);
+  }
+
+  private async initiateLocal(
+    handle: string,
+    brokerBase: string
+  ): Promise<OAuthSession> {
+    const { url, waitForSession, cleanup } = await startLocalOAuthServer(
+      this.decodeSession.bind(this)
+    );
+
+    const callbackUrl = `${url}/callback`;
+    const authUrl = `${brokerBase}/auth/login?handle=${encodeURIComponent(
+      handle
+    )}&return_to=${encodeURIComponent(callbackUrl)}`;
+
+    window.open(authUrl, "_blank");
+    new Notice("Continue login in your browser…");
+
+    try {
+      const session = await waitForSession();
+      return session;
+    } catch (e) {
+      cleanup();
+      throw e;
+    }
+  }
+
+  private async initiateExternal(
+    handle: string,
+    brokerBase: string,
+    callbackUrl: string
+  ): Promise<OAuthSession> {
+    const authUrl = `${brokerBase}/auth/login?handle=${encodeURIComponent(
+      handle
+    )}&return_to=${encodeURIComponent(callbackUrl)}`;
+
     const waitForCallback = new Promise<OAuthSession>((resolve, reject) => {
       this.callbackResolver = resolve;
       this.callbackRejecter = reject;
 
-      // Timeout after 5 minutes
       this.callbackTimeout = setTimeout(() => {
         if (this.callbackRejecter) {
           this.callbackRejecter(
