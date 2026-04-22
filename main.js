@@ -33,8 +33,7 @@ var import_obsidian = require("obsidian");
 var DEFAULT_SETTINGS = {
   serverUrl: "wss://irc.freeq.at/irc",
   brokerUrl: "https://auth.freeq.at",
-  callbackUrl: "",
-  // User must configure this — see README
+  callbackUrl: "https://codegod100.github.io/freeq-obsidian/oauth-callback.html",
   nick: "",
   did: "",
   appPassword: "",
@@ -69,12 +68,7 @@ var FreeQSettingTab = class extends import_obsidian.PluginSettingTab {
         })
       );
     } else {
-      if (!this.plugin.settings.callbackUrl) {
-        containerEl.createEl("div", {
-          cls: "setting-item-description",
-          text: "\u26A0\uFE0F OAuth callback URL is required. Configure it below under 'Server & Identity', then reload settings."
-        });
-      } else {
+      {
         let handleInput;
         new import_obsidian.Setting(containerEl).setName("Log in with AT Protocol").setDesc("Enter your handle (e.g., alice.bsky.social) to authenticate via Bluesky.").addText((text) => {
           handleInput = text.inputEl;
@@ -1601,11 +1595,6 @@ var FreeQPlugin = class extends import_obsidian6.Plugin {
   }
   // ── OAuth ──
   async initiateOAuth(handle) {
-    if (!this.settings.callbackUrl) {
-      throw new Error(
-        "OAuth callback URL is not configured. Set it in FreeQ Chat settings first."
-      );
-    }
     const session = await this.oauth.initiate(
       handle,
       this.settings.brokerUrl,

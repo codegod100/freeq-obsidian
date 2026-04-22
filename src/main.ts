@@ -123,11 +123,6 @@ export default class FreeQPlugin extends Plugin {
   // ── OAuth ──
 
   async initiateOAuth(handle: string): Promise<void> {
-    if (!this.settings.callbackUrl) {
-      throw new Error(
-        "OAuth callback URL is not configured. Set it in FreeQ Chat settings first."
-      );
-    }
     const session = await this.oauth.initiate(
       handle,
       this.settings.brokerUrl,

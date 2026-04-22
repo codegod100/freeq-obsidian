@@ -28,7 +28,7 @@ export interface FreeQSettings {
 export const DEFAULT_SETTINGS: FreeQSettings = {
   serverUrl: "wss://irc.freeq.at/irc",
   brokerUrl: "https://auth.freeq.at",
-  callbackUrl: "", // User must configure this — see README
+  callbackUrl: "https://codegod100.github.io/freeq-obsidian/oauth-callback.html",
   nick: "",
   did: "",
   appPassword: "",
@@ -77,12 +77,7 @@ export class FreeQSettingTab extends PluginSettingTab {
         );
     } else {
       // OAuth login
-      if (!this.plugin.settings.callbackUrl) {
-        containerEl.createEl("div", {
-          cls: "setting-item-description",
-          text: "⚠️ OAuth callback URL is required. Configure it below under 'Server & Identity', then reload settings.",
-        });
-      } else {
+      {
         let handleInput: HTMLInputElement;
         new Setting(containerEl)
           .setName("Log in with AT Protocol")
