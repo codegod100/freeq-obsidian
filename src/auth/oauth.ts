@@ -1,4 +1,4 @@
-import { Notice } from "obsidian";
+import { Notice, requestUrl } from "obsidian";
 
 export interface OAuthSession {
   did: string;
@@ -27,12 +27,10 @@ export class OAuthHandler {
       handle
     )}&return_to=${encodeURIComponent(callbackUrl)}`;
 
-    // Pre-flight broker health check
+    // Pre-flight broker health check (requestUrl bypasses CORS)
     try {
-      const check = await fetch(`${brokerBase}/health`, {
-        signal: AbortSignal.timeout(5000),
-      });
-      if (!check.ok) {
+      const check = await requestUrl(`${brokerBase}/health`);
+      if (check.status >= 400) {
         throw new Error("Authentication service unavailable.");
       }
     } catch (e: any) {

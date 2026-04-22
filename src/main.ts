@@ -2,12 +2,14 @@ import {
   Plugin,
   WorkspaceLeaf,
   Notice,
+  requestUrl,
 } from "obsidian";
 import { FreeQSettingTab, DEFAULT_SETTINGS, type FreeQSettings } from "./settings";
 import { IRCClient } from "./irc/client";
 import { ChatView, VIEW_TYPE_FREEQ } from "./ui/ChatView";
 import { Clipper } from "./clip/clipper";
 import { OAuthHandler, type OAuthSession } from "./auth/oauth";
+import { JoinChannelModal } from "./ui/JoinChannelModal";
 
 export default class FreeQPlugin extends Plugin {
   settings: FreeQSettings;
@@ -64,10 +66,13 @@ export default class FreeQPlugin extends Plugin {
       id: "freeq-join-channel",
       name: "Join channel",
       callback: () => {
-        const channel = prompt("Channel name (e.g. #general):");
-        if (channel?.trim()) {
-          this.client.join(channel.trim());
+        if (!this.client.isConnected()) {
+          new Notice("Not connected to server.");
+          return;
         }
+        new JoinChannelModal(this.app, (channel) => {
+          this.client.join(channel);
+        }).open();
       },
     });
 
@@ -111,6 +116,11 @@ export default class FreeQPlugin extends Plugin {
   // ── OAuth ──
 
   async initiateOAuth(handle: string): Promise<void> {
+    if (!this.settings.callbackUrl) {
+      throw new Error(
+        "OAuth callback URL is not configured. Set it in FreeQ Chat settings first."
+      );
+    }
     const session = await this.oauth.initiate(
       handle,
       this.settings.brokerUrl,
@@ -179,6 +189,13 @@ export default class FreeQPlugin extends Plugin {
 
     const desiredNick =
       nick || oauthSession?.nick || did?.split(":").pop()?.slice(0, 15) || "guest";
+
+    if (!token) {
+      new Notice(
+        "Connecting as guest — configure OAuth or App Password in settings to authenticate."
+      );
+    }
+
     this.client.connect(serverUrl, desiredNick, token, effectiveDid, method);
     new Notice("Connecting to FreeQ…");
   }
@@ -210,53 +227,31 @@ export default class FreeQPlugin extends Plugin {
   private async refreshBrokerToken(
     brokerToken: string
   ): Promise<{ token: string; nick: string; did: string; handle: string } | null> {
-    const ctrl = new AbortController();
-    const tm = setTimeout(() => ctrl.abort(), 8000);
     const brokerBody = JSON.stringify({ broker_token: brokerToken });
     const url = this.settings.brokerUrl.replace(/\/$/, "") + "/session";
 
-    const doFetch = () =>
-      fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: brokerBody,
-        signal: ctrl.signal,
-      });
-
-    try {
-      for (let attempt = 0; attempt < 3; attempt++) {
-        let res: Response;
-        try {
-          res = await doFetch();
-        } catch (e: any) {
-          if (e?.name === "AbortError") throw e;
-          if (attempt < 2) {
-            await new Promise((r) => setTimeout(r, 500 * (attempt + 1)));
-            continue;
-          }
-          throw e;
-        }
-
-        if (res.status === 502 && attempt < 2) {
-          await new Promise((r) => setTimeout(r, 500 * (attempt + 1)));
-          continue;
-        }
-        if (res.status === 401) {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const res = await requestUrl({
+          url,
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: brokerBody,
+        });
+        return res.json as { token: string; nick: string; did: string; handle: string };
+      } catch (e: any) {
+        const status = e?.status ?? 0;
+        if (status === 401) {
           this.settings.oauthSession = undefined;
           await this.saveSettings();
           throw new Error("Broker token expired. Please log in again.");
         }
-        if (!res.ok) {
-          const text = await res.text();
-          throw new Error(`Broker refresh failed: ${res.status} ${text}`);
+        if (status === 502 && attempt < 2) {
+          await new Promise((r) => setTimeout(r, 500 * (attempt + 1)));
+          continue;
         }
-        const data = await res.json();
-        clearTimeout(tm);
-        return data as { token: string; nick: string; did: string; handle: string };
+        throw e;
       }
-    } catch (e) {
-      clearTimeout(tm);
-      throw e;
     }
     return null;
   }
@@ -284,31 +279,33 @@ export default class FreeQPlugin extends Plugin {
     }
 
     const url = endpoint.replace(/\/$/, "") + "/xrpc/com.atproto.server.createSession";
-    const resp = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ identifier: did, password: appPassword }),
-    });
-
-    if (!resp.ok) {
-      const err = await resp.text();
-      console.error("[freeq] createSession failed:", err);
+    try {
+      const resp = await requestUrl({
+        url,
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ identifier: did, password: appPassword }),
+      });
+      if (resp.status >= 400) {
+        console.error("[freeq] createSession failed:", resp.text);
+        return null;
+      }
+      const data = resp.json;
+      if (!data.accessJwt) return null;
+      return { accessJwt: data.accessJwt as string };
+    } catch (e) {
+      console.error("[freeq] createSession network error:", e);
       return null;
     }
-
-    const data = await resp.json();
-    if (!data.accessJwt) return null;
-    return { accessJwt: data.accessJwt as string };
   }
 
   private async resolveHandle(handle: string): Promise<string | null> {
     try {
-      const resp = await fetch(
+      const resp = await requestUrl(
         `https://plc.directory/resolveHandle?handle=${encodeURIComponent(handle)}`
       );
-      if (!resp.ok) return null;
-      const data = await resp.json();
-      return data.did || null;
+      if (resp.status >= 400) return null;
+      return resp.json?.did || null;
     } catch {
       return null;
     }
@@ -322,9 +319,9 @@ export default class FreeQPlugin extends Plugin {
         ? `https://${did.slice(8)}/.well-known/did.json`
         : null;
       if (!url) return null;
-      const resp = await fetch(url);
-      if (!resp.ok) return null;
-      return await resp.json();
+      const resp = await requestUrl(url);
+      if (resp.status >= 400) return null;
+      return resp.json;
     } catch {
       return null;
     }

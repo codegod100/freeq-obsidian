@@ -77,44 +77,51 @@ export class FreeQSettingTab extends PluginSettingTab {
         );
     } else {
       // OAuth login
-      let handleInput: HTMLInputElement;
-      new Setting(containerEl)
-        .setName("Log in with AT Protocol")
-        .setDesc("Enter your handle (e.g., alice.bsky.social) to authenticate via Bluesky.")
-        .addText((text) => {
-          handleInput = text.inputEl;
-          text.setPlaceholder("alice.bsky.social");
-        })
-        .addButton((button) =>
-          button
-            .setButtonText("Log in")
-            .setCta()
-            .onClick(async () => {
-              const handle = handleInput.value.trim();
-              if (!handle) {
-                new Notice("Please enter a handle.");
-                return;
-              }
-              try {
-                button.setDisabled(true);
-                button.setButtonText("Logging in…");
-                await this.plugin.initiateOAuth(handle);
-                this.display();
-                new Notice(`Logged in as ${this.plugin.settings.oauthSession?.handle || handle}`);
-              } catch (e: any) {
-                console.error("[freeq] OAuth login failed:", e);
-                new Notice(`Login failed: ${e.message || String(e)}`);
-              } finally {
-                button.setDisabled(false);
-                button.setButtonText("Log in");
-              }
-            })
-        );
+      if (!this.plugin.settings.callbackUrl) {
+        containerEl.createEl("div", {
+          cls: "setting-item-description",
+          text: "⚠️ OAuth callback URL is required. Configure it below under 'Server & Identity', then reload settings.",
+        });
+      } else {
+        let handleInput: HTMLInputElement;
+        new Setting(containerEl)
+          .setName("Log in with AT Protocol")
+          .setDesc("Enter your handle (e.g., alice.bsky.social) to authenticate via Bluesky.")
+          .addText((text) => {
+            handleInput = text.inputEl;
+            text.setPlaceholder("alice.bsky.social");
+          })
+          .addButton((button) =>
+            button
+              .setButtonText("Log in")
+              .setCta()
+              .onClick(async () => {
+                const handle = handleInput.value.trim();
+                if (!handle) {
+                  new Notice("Please enter a handle.");
+                  return;
+                }
+                try {
+                  button.setDisabled(true);
+                  button.setButtonText("Logging in…");
+                  await this.plugin.initiateOAuth(handle);
+                  this.display();
+                  new Notice(`Logged in as ${this.plugin.settings.oauthSession?.handle || handle}`);
+                } catch (e: any) {
+                  console.error("[freeq] OAuth login failed:", e);
+                  new Notice(`Login failed: ${e.message || String(e)}`);
+                } finally {
+                  button.setDisabled(false);
+                  button.setButtonText("Log in");
+                }
+              })
+          );
 
-      containerEl.createEl("p", {
-        cls: "setting-item-description",
-        text: "A browser window will open to complete authorization. Return to Obsidian when done.",
-      });
+        containerEl.createEl("p", {
+          cls: "setting-item-description",
+          text: "A browser window will open to complete authorization. Return to Obsidian when done.",
+        });
+      }
 
       // App-password fallback
       containerEl.createEl("h3", { text: "Fallback: App Password" });

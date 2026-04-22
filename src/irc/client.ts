@@ -146,6 +146,10 @@ export class IRCClient {
     this.transport = null;
   }
 
+  isConnected(): boolean {
+    return this.registered && this.transport !== null;
+  }
+
   private emit(ev: ClientEvent) {
     try {
       this.onEvent?.(ev);

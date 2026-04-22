@@ -1,6 +1,7 @@
 import { ItemView, WorkspaceLeaf, Menu, Notice } from "obsidian";
 import type FreeQPlugin from "../main";
 import type { ClientEvent, ChatMessage, ChatChannel, ChatMember } from "../irc/client";
+import { JoinChannelModal } from "./JoinChannelModal";
 
 export const VIEW_TYPE_FREEQ = "freeq-chat";
 
@@ -268,10 +269,13 @@ export class ChatView extends ItemView {
   }
 
   private promptJoin() {
-    const input = prompt("Channel name (e.g. #general):");
-    if (input?.trim()) {
-      this.plugin.client.join(input.trim());
+    if (!this.plugin.client.isConnected()) {
+      new Notice("Not connected to server.");
+      return;
     }
+    new JoinChannelModal(this.app, (channel) => {
+      this.plugin.client.join(channel);
+    }).open();
   }
 
   private toggleMembers() {
