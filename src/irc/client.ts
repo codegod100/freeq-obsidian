@@ -350,9 +350,8 @@ export class IRCClient {
       }
 
       case "AUTHENTICATE": {
-        if (m.params[0] === "+") {
-          this.sendSaslResponse();
-        }
+        // Server sends challenge — always respond with our payload
+        this.sendSaslResponse(m.params[0]);
         break;
       }
 
@@ -698,11 +697,25 @@ export class IRCClient {
     this.raw("AUTHENTICATE ATPROTO-CHALLENGE");
   }
 
-  private sendSaslResponse() {
+  private sendSaslResponse(challenge?: string) {
+    // Decode server's challenge (base64 JSON with session_id, nonce, timestamp)
+    let extra: Record<string, string> = {};
+    if (challenge && challenge !== "+") {
+      try {
+        const json = atob(challenge);
+        const parsed = JSON.parse(json);
+        if (parsed.session_id) extra.session_id = parsed.session_id;
+        if (parsed.nonce) extra.nonce = parsed.nonce;
+        if (parsed.timestamp) extra.timestamp = parsed.timestamp;
+      } catch {
+        // ignore invalid challenge
+      }
+    }
     const payload = JSON.stringify({
       did: this.saslDid,
       method: this.saslMethod || "pds-session",
       signature: this.saslToken,
+      ...extra,
     });
     const encoded = btoa(payload);
     // Send in 400-byte chunks

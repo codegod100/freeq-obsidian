@@ -594,9 +594,7 @@ var IRCClient = class {
         break;
       }
       case "AUTHENTICATE": {
-        if (m.params[0] === "+") {
-          this.sendSaslResponse();
-        }
+        this.sendSaslResponse(m.params[0]);
         break;
       }
       case "900":
@@ -905,11 +903,23 @@ var IRCClient = class {
   startSasl() {
     this.raw("AUTHENTICATE ATPROTO-CHALLENGE");
   }
-  sendSaslResponse() {
+  sendSaslResponse(challenge) {
+    let extra = {};
+    if (challenge && challenge !== "+") {
+      try {
+        const json = atob(challenge);
+        const parsed = JSON.parse(json);
+        if (parsed.session_id) extra.session_id = parsed.session_id;
+        if (parsed.nonce) extra.nonce = parsed.nonce;
+        if (parsed.timestamp) extra.timestamp = parsed.timestamp;
+      } catch {
+      }
+    }
     const payload = JSON.stringify({
       did: this.saslDid,
       method: this.saslMethod || "pds-session",
-      signature: this.saslToken
+      signature: this.saslToken,
+      ...extra
     });
     const encoded = btoa(payload);
     for (let i = 0; i < encoded.length; i += 400) {
