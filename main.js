@@ -239,6 +239,27 @@ function parse(raw) {
   const command = (params.shift() || "").toUpperCase();
   return { tags, prefix, command, params };
 }
+function serializeTags(tags) {
+  return Object.entries(tags).map(([k, v]) => {
+    const escaped = v.replace(/\\/g, "\\\\").replace(/;/g, "\\:").replace(/ /g, "\\s").replace(/\r/g, "\\r").replace(/\n/g, "\\n");
+    return escaped ? `${k}=${escaped}` : k;
+  }).join(";");
+}
+function format(command, params, tags) {
+  let line = "";
+  if (tags && Object.keys(tags).length > 0) {
+    line += `@${serializeTags(tags)} `;
+  }
+  line += command;
+  for (let i = 0; i < params.length; i++) {
+    if (i === params.length - 1 && (params[i].includes(" ") || params[i].startsWith(":"))) {
+      line += ` :${params[i]}`;
+    } else {
+      line += ` ${params[i]}`;
+    }
+  }
+  return line;
+}
 
 // src/irc/transport.ts
 var Transport = class _Transport {
@@ -452,16 +473,18 @@ var IRCClient = class {
     console.log("[irc] raw \u2192", line);
     this.transport?.send(line + "\r\n");
   }
-  sendPrivmsg(target, text) {
-    this.raw(`PRIVMSG ${target} :${text}`);
+  sendPrivmsg(target, text, replyTo) {
+    const tags = replyTo ? { "+reply": replyTo } : {};
+    this.raw(format("PRIVMSG", [target, text], tags));
     if (!this.ackedCaps.has("echo-message")) {
       this.addMessage(target, {
         id: this.nextLocalId(),
         from: this.nick,
         text,
         timestamp: /* @__PURE__ */ new Date(),
-        tags: {},
-        isSelf: true
+        tags,
+        isSelf: true,
+        replyTo
       });
     }
   }
@@ -991,6 +1014,8 @@ var ChatView = class extends import_obsidian3.ItemView {
   memberListEl;
   toggleMembersBtn;
   showMembers = false;
+  replyBannerEl;
+  replyingTo = null;
   constructor(leaf, plugin) {
     super(leaf);
     this.plugin = plugin;
@@ -1056,6 +1081,8 @@ var ChatView = class extends import_obsidian3.ItemView {
       cls: "freeq-empty freeq-welcome",
       text: "FreeQ Chat\nConnect to start chatting."
     });
+    this.replyBannerEl = msgWrap.createDiv({ cls: "freeq-reply-banner" });
+    this.replyBannerEl.style.display = "none";
     const inputWrap = msgWrap.createDiv({ cls: "freeq-input-wrap" });
     this.inputEl = inputWrap.createEl("input", {
       cls: "freeq-input",
@@ -1065,6 +1092,9 @@ var ChatView = class extends import_obsidian3.ItemView {
       if (e.key === "Enter" && !e.shiftKey) {
         e.preventDefault();
         this.sendInput();
+      }
+      if (e.key === "Escape") {
+        this.cancelReply();
       }
     });
     this.memberListEl = main.createDiv({ cls: "freeq-member-list" });
@@ -1178,7 +1208,8 @@ var ChatView = class extends import_obsidian3.ItemView {
       this.handleCommand(text.slice(1));
       return;
     }
-    this.plugin.client.sendPrivmsg(target, text);
+    this.plugin.client.sendPrivmsg(target, text, this.replyingTo?.id);
+    this.cancelReply();
   }
   handleCommand(cmd) {
     const [name, ...rest] = cmd.split(" ");
@@ -1309,10 +1340,26 @@ var ChatView = class extends import_obsidian3.ItemView {
   }
   renderMessage(msg) {
     const el = this.messageAreaEl.createDiv({ cls: "freeq-message" });
+    el.setAttribute("data-msg-id", msg.id);
     if (msg.isSystem) el.addClass("freeq-message-system");
     if (msg.isSelf) el.addClass("freeq-message-self");
     if (msg.isAction) el.addClass("freeq-message-action");
     if (msg.deleted) el.addClass("freeq-message-deleted");
+    if (msg.replyTo) {
+      const parent = this.findMessageInChannel(msg.replyTo);
+      const indicator = el.createDiv({ cls: "freeq-reply-indicator" });
+      indicator.createSpan({ cls: "freeq-reply-bar" });
+      const author = indicator.createSpan({ cls: "freeq-reply-author" });
+      const preview = indicator.createSpan({ cls: "freeq-reply-text" });
+      if (parent) {
+        author.setText(`@${parent.from}`);
+        preview.setText(this.truncateText(parent.text, 80));
+        indicator.addEventListener("click", () => this.scrollToMessage(msg.replyTo));
+      } else {
+        author.setText("@?");
+        preview.setText("Original message");
+      }
+    }
     const meta = el.createDiv({ cls: "freeq-message-meta" });
     if (!msg.isSystem && msg.from) {
       const nick = meta.createSpan({ cls: "freeq-message-nick" });
@@ -1331,6 +1378,24 @@ var ChatView = class extends import_obsidian3.ItemView {
       this.showMessageMenu(e, msg, this.plugin.client.activeChannel);
     });
   }
+  findMessageInChannel(msgId) {
+    const ch = this.plugin.client.channels.get(
+      this.plugin.client.activeChannel.toLowerCase()
+    );
+    if (!ch) return void 0;
+    return ch.messages.find((m) => m.id === msgId);
+  }
+  scrollToMessage(msgId) {
+    const el = this.messageAreaEl.querySelector(`[data-msg-id="${msgId}"]`);
+    if (!el) return;
+    el.scrollIntoView({ behavior: "smooth", block: "center" });
+    el.addClass("freeq-message-highlight");
+    setTimeout(() => el.removeClass("freeq-message-highlight"), 1500);
+  }
+  truncateText(text, max) {
+    if (text.length <= max) return text;
+    return text.slice(0, max - 1) + "\u2026";
+  }
   showMessageMenu(event, msg, channel) {
     const menu = new import_obsidian3.Menu();
     menu.addItem(
@@ -1343,6 +1408,11 @@ var ChatView = class extends import_obsidian3.ItemView {
         }
       })
     );
+    menu.addItem(
+      (item) => item.setTitle("Reply").setIcon("Reply").onClick(() => {
+        this.startReplyingTo(msg);
+      })
+    );
     if (msg.replyTo) {
       menu.addItem(
         (item) => item.setTitle("View thread").onClick(() => {
@@ -1350,6 +1420,31 @@ var ChatView = class extends import_obsidian3.ItemView {
       );
     }
     menu.showAtMouseEvent(event);
+  }
+  startReplyingTo(msg) {
+    this.replyingTo = {
+      id: msg.id,
+      from: msg.from,
+      preview: this.truncateText(msg.text, 80)
+    };
+    this.replyBannerEl.empty();
+    this.replyBannerEl.style.display = "flex";
+    const text = this.replyBannerEl.createSpan({});
+    text.setText(`\u21B3 @${msg.from}: ${this.truncateText(msg.text, 80)}`);
+    const cancelBtn = this.replyBannerEl.createEl("button", {
+      cls: "freeq-reply-cancel",
+      text: "\u2715"
+    });
+    cancelBtn.addEventListener("click", () => this.cancelReply());
+    this.inputEl.placeholder = `Reply to @${msg.from}\u2026`;
+    this.inputEl.focus();
+  }
+  cancelReply() {
+    this.replyingTo = null;
+    this.replyBannerEl.style.display = "none";
+    this.replyBannerEl.empty();
+    const nick = this.plugin.client.currentNick;
+    this.inputEl.placeholder = nick ? `Message as ${nick}\u2026` : "Type a message\u2026";
   }
   renderMembers() {
     this.memberListEl.empty();

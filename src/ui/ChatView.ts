@@ -15,6 +15,8 @@ export class ChatView extends ItemView {
   private memberListEl!: HTMLElement;
   private toggleMembersBtn!: HTMLElement;
   private showMembers = false;
+  private replyBannerEl!: HTMLElement;
+  private replyingTo: { id: string; from: string; preview: string } | null = null;
 
   constructor(leaf: WorkspaceLeaf, plugin: FreeQPlugin) {
     super(leaf);
@@ -104,6 +106,10 @@ export class ChatView extends ItemView {
       text: "FreeQ Chat\nConnect to start chatting.",
     });
 
+    // Reply banner (hidden by default)
+    this.replyBannerEl = msgWrap.createDiv({ cls: "freeq-reply-banner" });
+    this.replyBannerEl.style.display = "none";
+
     // Input
     const inputWrap = msgWrap.createDiv({ cls: "freeq-input-wrap" });
     this.inputEl = inputWrap.createEl("input", {
@@ -114,6 +120,9 @@ export class ChatView extends ItemView {
       if (e.key === "Enter" && !e.shiftKey) {
         e.preventDefault();
         this.sendInput();
+      }
+      if (e.key === "Escape") {
+        this.cancelReply();
       }
     });
 
@@ -245,7 +254,8 @@ export class ChatView extends ItemView {
       return;
     }
 
-    this.plugin.client.sendPrivmsg(target, text);
+    this.plugin.client.sendPrivmsg(target, text, this.replyingTo?.id);
+    this.cancelReply();
   }
 
   private handleCommand(cmd: string) {
@@ -389,10 +399,28 @@ export class ChatView extends ItemView {
 
   private renderMessage(msg: ChatMessage) {
     const el = this.messageAreaEl.createDiv({ cls: "freeq-message" });
+    el.setAttribute("data-msg-id", msg.id);
     if (msg.isSystem) el.addClass("freeq-message-system");
     if (msg.isSelf) el.addClass("freeq-message-self");
     if (msg.isAction) el.addClass("freeq-message-action");
     if (msg.deleted) el.addClass("freeq-message-deleted");
+
+    // Reply indicator (Discord-style)
+    if (msg.replyTo) {
+      const parent = this.findMessageInChannel(msg.replyTo);
+      const indicator = el.createDiv({ cls: "freeq-reply-indicator" });
+      indicator.createSpan({ cls: "freeq-reply-bar" });
+      const author = indicator.createSpan({ cls: "freeq-reply-author" });
+      const preview = indicator.createSpan({ cls: "freeq-reply-text" });
+      if (parent) {
+        author.setText(`@${parent.from}`);
+        preview.setText(this.truncateText(parent.text, 80));
+        indicator.addEventListener("click", () => this.scrollToMessage(msg.replyTo!));
+      } else {
+        author.setText("@?");
+        preview.setText("Original message");
+      }
+    }
 
     const meta = el.createDiv({ cls: "freeq-message-meta" });
     if (!msg.isSystem && msg.from) {
@@ -409,11 +437,32 @@ export class ChatView extends ItemView {
       body.setText(msg.text);
     }
 
-    // Context menu to clip
+    // Context menu to clip / reply
     el.addEventListener("contextmenu", (e) => {
       e.preventDefault();
       this.showMessageMenu(e, msg, this.plugin.client.activeChannel);
     });
+  }
+
+  private findMessageInChannel(msgId: string): ChatMessage | undefined {
+    const ch = this.plugin.client.channels.get(
+      this.plugin.client.activeChannel.toLowerCase()
+    );
+    if (!ch) return undefined;
+    return ch.messages.find((m) => m.id === msgId);
+  }
+
+  private scrollToMessage(msgId: string) {
+    const el = this.messageAreaEl.querySelector(`[data-msg-id="${msgId}"]`);
+    if (!el) return;
+    el.scrollIntoView({ behavior: "smooth", block: "center" });
+    el.addClass("freeq-message-highlight");
+    setTimeout(() => el.removeClass("freeq-message-highlight"), 1500);
+  }
+
+  private truncateText(text: string, max: number): string {
+    if (text.length <= max) return text;
+    return text.slice(0, max - 1) + "…";
   }
 
   private showMessageMenu(
@@ -435,6 +484,14 @@ export class ChatView extends ItemView {
           }
         })
     );
+    menu.addItem((item) =>
+      item
+        .setTitle("Reply")
+        .setIcon("Reply")
+        .onClick(() => {
+          this.startReplyingTo(msg);
+        })
+    );
     if (msg.replyTo) {
       menu.addItem((item) =>
         item.setTitle("View thread").onClick(() => {
@@ -443,6 +500,33 @@ export class ChatView extends ItemView {
       );
     }
     menu.showAtMouseEvent(event);
+  }
+
+  private startReplyingTo(msg: ChatMessage) {
+    this.replyingTo = {
+      id: msg.id,
+      from: msg.from,
+      preview: this.truncateText(msg.text, 80),
+    };
+    this.replyBannerEl.empty();
+    this.replyBannerEl.style.display = "flex";
+    const text = this.replyBannerEl.createSpan({});
+    text.setText(`↳ @${msg.from}: ${this.truncateText(msg.text, 80)}`);
+    const cancelBtn = this.replyBannerEl.createEl("button", {
+      cls: "freeq-reply-cancel",
+      text: "✕",
+    });
+    cancelBtn.addEventListener("click", () => this.cancelReply());
+    this.inputEl.placeholder = `Reply to @${msg.from}…`;
+    this.inputEl.focus();
+  }
+
+  private cancelReply() {
+    this.replyingTo = null;
+    this.replyBannerEl.style.display = "none";
+    this.replyBannerEl.empty();
+    const nick = this.plugin.client.currentNick;
+    this.inputEl.placeholder = nick ? `Message as ${nick}…` : "Type a message…";
   }
 
   private renderMembers() {

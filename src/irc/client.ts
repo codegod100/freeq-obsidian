@@ -6,6 +6,7 @@
  */
 
 import { parse, prefixNick, format, type IRCMessage } from "./parser";
+
 import { Transport, type TransportState } from "./transport";
 
 // ── Types ──
@@ -190,8 +191,9 @@ export class IRCClient {
     this.transport?.send(line + "\r\n");
   }
 
-  sendPrivmsg(target: string, text: string) {
-    this.raw(`PRIVMSG ${target} :${text}`);
+  sendPrivmsg(target: string, text: string, replyTo?: string) {
+    const tags: Record<string, string> = replyTo ? { "+reply": replyTo } : {};
+    this.raw(format("PRIVMSG", [target, text], tags));
     // Local echo if no echo-message
     if (!this.ackedCaps.has("echo-message")) {
       this.addMessage(target, {
@@ -199,8 +201,9 @@ export class IRCClient {
         from: this.nick,
         text,
         timestamp: new Date(),
-        tags: {},
+        tags,
         isSelf: true,
+        replyTo,
       });
     }
   }

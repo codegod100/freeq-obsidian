@@ -257,3 +257,91 @@
   background: var(--background-modifier-border);
   border-radius: 2px;
 }
+
+/* ── Reply indicator (Discord-style) ── */
+
+.freeq-reply-indicator {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 2px;
+  cursor: pointer;
+}
+
+.freeq-reply-bar {
+  width: 2px;
+  height: 16px;
+  background: var(--interactive-accent);
+  border-radius: 1px;
+  flex-shrink: 0;
+}
+
+.freeq-reply-author {
+  color: var(--text-accent);
+  font-weight: 600;
+  font-size: var(--font-ui-smaller);
+  flex-shrink: 0;
+}
+
+.freeq-reply-text {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.freeq-reply-indicator:hover .freeq-reply-author {
+  text-decoration: underline;
+}
+
+/* ── Reply composition banner ── */
+
+.freeq-reply-banner {
+  display: none;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 8px;
+  background: var(--background-primary-alt);
+  border-left: 2px solid var(--interactive-accent);
+  border-radius: var(--radius-s);
+  margin: 4px 10px;
+  font-size: var(--font-ui-smaller);
+}
+
+.freeq-reply-banner span {
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.freeq-reply-cancel {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 0 4px;
+  font-size: var(--font-ui-small);
+  line-height: 1;
+}
+
+.freeq-reply-cancel:hover {
+  color: var(--text-normal);
+}
+
+/* ── Scroll-to highlight animation ── */
+
+.freeq-message-highlight {
+  animation: freeq-highlight 1.5s ease-out;
+}
+
+@keyframes freeq-highlight {
+  0% {
+    background: hsla(var(--interactive-accent-hsl), 0.2);
+  }
+  100% {
+    background: transparent;
+  }
+}

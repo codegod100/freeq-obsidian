@@ -592,7 +592,18 @@ describe("IRCClient", () => {
     ws.send.mockClear();
 
     client.sendPrivmsg("#general", "hi");
-    expect(ws.send).toHaveBeenCalledWith("PRIVMSG #general :hi\r\n");
+    expect(ws.send).toHaveBeenCalledWith("PRIVMSG #general hi\r\n");
+  });
+
+  it("sendPrivmsg with replyTo sends tagged PRIVMSG", () => {
+    const client = createClient();
+    client.connect("wss://irc.freeq.at/irc", "testuser");
+    const ws = getLastWs();
+    ws.simulateOpen();
+    ws.send.mockClear();
+
+    client.sendPrivmsg("#general", "hi", "abc123");
+    expect(ws.send).toHaveBeenCalledWith("@+reply=abc123 PRIVMSG #general hi\r\n");
   });
 
   it("sendAction sends CTCP ACTION", () => {
@@ -721,7 +732,7 @@ describe("IRCClient", () => {
     client.addListener(listener);
 
     client.sendPrivmsg("#general", "hi");
-    expect(ws.send).toHaveBeenCalledWith("PRIVMSG #general :hi\r\n");
+    expect(ws.send).toHaveBeenCalledWith("PRIVMSG #general hi\r\n");
     expect(listener).not.toHaveBeenCalled();
   });
 
