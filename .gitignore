@@ -5,3 +5,4 @@ main.js
 *.map
 .DS_Store
 .env
+coverage/

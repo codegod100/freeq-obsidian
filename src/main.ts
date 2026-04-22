@@ -148,29 +148,9 @@ export default class FreeQPlugin extends Plugin {
 
     // Try OAuth session first
     if (oauthSession) {
-      // Refresh web token via broker if the stored one might be stale
-      try {
-        const refreshed = await this.refreshBrokerToken(oauthSession.brokerToken);
-        if (refreshed) {
-          token = refreshed.token;
-          method = "web-token";
-          effectiveDid = refreshed.did;
-          // Update stored session
-          const sess = this.settings.oauthSession;
-          if (sess) {
-            sess.webToken = refreshed.token;
-            sess.nick = refreshed.nick;
-            await this.saveSettings();
-          }
-        } else {
-          token = oauthSession.webToken;
-          method = "web-token";
-        }
-      } catch (e) {
-        console.warn("[freeq] broker refresh failed, using stored token:", e);
-        token = oauthSession.webToken;
-        method = "web-token";
-      }
+      token = oauthSession.webToken;
+      method = "web-token";
+      effectiveDid = oauthSession.did;
     }
     // Fallback to app password
     else if (did && appPassword) {
@@ -201,11 +181,13 @@ export default class FreeQPlugin extends Plugin {
     const autoJoinUnsub = this.client.addListener((ev) => {
       if (ev.type === "registered") {
         autoJoinUnsub();
-        const channels = this.settings.autoJoinChannels
+        const channels = (this.settings.autoJoinChannels || "#general")
           .split(",")
           .map((c) => c.trim())
           .filter(Boolean);
+        console.log("[freeq] auto-joining channels:", channels);
         for (const ch of channels) {
+          console.log("[freeq] joining", ch);
           this.client.join(ch);
         }
         if (channels.length && !this.client.activeChannel) {
@@ -214,6 +196,7 @@ export default class FreeQPlugin extends Plugin {
       }
     });
 
+    console.log("[freeq] connecting to", serverUrl, "as", desiredNick, "method", method, "did", effectiveDid);
     this.client.connect(serverUrl, desiredNick, token, effectiveDid, method);
     new Notice("Connecting to FreeQ…");
   }

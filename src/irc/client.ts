@@ -107,6 +107,7 @@ export class IRCClient {
     saslDid?: string,
     saslMethod?: string
   ) {
+    console.log("[irc] connect() called", url, desiredNick, saslMethod);
     this.disconnect();
     this.url = url;
     this.desiredNick = desiredNick;
@@ -162,6 +163,9 @@ export class IRCClient {
   }
 
   private emit(ev: ClientEvent) {
+    if (ev.type !== "message" && ev.type !== "serverMessage") {
+      console.log("[irc] emit", ev.type, ev);
+    }
     for (const fn of this.listeners) {
       try {
         fn(ev);
@@ -204,6 +208,7 @@ export class IRCClient {
   }
 
   join(channel: string) {
+    console.log("[irc] join()", channel);
     this.raw(`JOIN ${channel}`);
     this.ensureChannel(channel);
     this.activeChannel = channel;
@@ -359,7 +364,7 @@ export class IRCClient {
       }
 
       case "904": {
-        const reason = m.params[2] || "SASL authentication failed";
+        const reason = m.params[m.params.length - 1] || "SASL authentication failed";
         this.emit({ type: "authError", message: reason });
         this.addServerMessage(`Auth failed: ${reason}`);
         this.raw("CAP END");
@@ -538,12 +543,20 @@ export class IRCClient {
         const modes = m.params.slice(1);
         const ch = this.channels.get(target.toLowerCase());
         if (ch) {
-          // Simple mode parsing for +o / +v
+          // Simple mode parsing for +nt / -o / +v
           let adding = true;
           for (const token of modes) {
-            if (token.startsWith("+")) adding = true;
-            else if (token.startsWith("-")) adding = false;
-            else if (token.length === 2 && (token[0] === "+" || token[0] === "-")) {
+            if (token.startsWith("+")) {
+              adding = true;
+              for (let i = 1; i < token.length; i++) {
+                ch.modes.add(token[i]);
+              }
+            } else if (token.startsWith("-")) {
+              adding = false;
+              for (let i = 1; i < token.length; i++) {
+                ch.modes.delete(token[i]);
+              }
+            } else if (token.length === 2 && (token[0] === "+" || token[0] === "-")) {
               const mode = token[1];
               if (adding) ch.modes.add(mode);
               else ch.modes.delete(mode);

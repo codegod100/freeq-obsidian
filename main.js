@@ -378,6 +378,7 @@ var IRCClient = class {
   // Message ID counter for local echo
   localIdSeq = 0;
   connect(url, desiredNick, saslToken, saslDid, saslMethod) {
+    console.log("[irc] connect() called", url, desiredNick, saslMethod);
     this.disconnect();
     this.url = url;
     this.desiredNick = desiredNick;
@@ -424,6 +425,9 @@ var IRCClient = class {
     };
   }
   emit(ev) {
+    if (ev.type !== "message" && ev.type !== "serverMessage") {
+      console.log("[irc] emit", ev.type, ev);
+    }
     for (const fn of this.listeners) {
       try {
         fn(ev);
@@ -459,6 +463,7 @@ var IRCClient = class {
     this.raw(`PRIVMSG ${target} :ACTION ${text}`);
   }
   join(channel) {
+    console.log("[irc] join()", channel);
     this.raw(`JOIN ${channel}`);
     this.ensureChannel(channel);
     this.activeChannel = channel;
@@ -596,7 +601,7 @@ var IRCClient = class {
         break;
       }
       case "904": {
-        const reason = m.params[2] || "SASL authentication failed";
+        const reason = m.params[m.params.length - 1] || "SASL authentication failed";
         this.emit({ type: "authError", message: reason });
         this.addServerMessage(`Auth failed: ${reason}`);
         this.raw("CAP END");
@@ -760,9 +765,17 @@ var IRCClient = class {
         if (ch) {
           let adding = true;
           for (const token of modes) {
-            if (token.startsWith("+")) adding = true;
-            else if (token.startsWith("-")) adding = false;
-            else if (token.length === 2 && (token[0] === "+" || token[0] === "-")) {
+            if (token.startsWith("+")) {
+              adding = true;
+              for (let i = 1; i < token.length; i++) {
+                ch.modes.add(token[i]);
+              }
+            } else if (token.startsWith("-")) {
+              adding = false;
+              for (let i = 1; i < token.length; i++) {
+                ch.modes.delete(token[i]);
+              }
+            } else if (token.length === 2 && (token[0] === "+" || token[0] === "-")) {
               const mode = token[1];
               if (adding) ch.modes.add(mode);
               else ch.modes.delete(mode);
@@ -975,11 +988,17 @@ var ChatView = class extends import_obsidian3.ItemView {
     return "message-circle";
   }
   async onOpen() {
+    console.log("[chatview] onOpen called");
+    if (!this.containerEl.children[1]) {
+      console.error("[chatview] containerEl.children[1] is missing \u2014 cannot build UI");
+      return;
+    }
     this.container = this.containerEl.children[1];
     this.container.empty();
     this.container.addClass("freeq-chat-container");
     this.buildLayout();
     this.bindEvents();
+    console.log("[chatview] isConnected?", this.plugin.client.isConnected(), "channels", Array.from(this.plugin.client.channels.keys()));
     if (this.plugin.client.isConnected()) {
       this.catchUpState();
     }
@@ -1042,6 +1061,9 @@ var ChatView = class extends import_obsidian3.ItemView {
   }
   // ── Event handling ──
   handleEvent(ev) {
+    if (ev.type !== "message" && ev.type !== "serverMessage") {
+      console.log("[chatview] handleEvent", ev.type, ev);
+    }
     switch (ev.type) {
       case "state":
         this.updateStatus(ev.state);
@@ -1107,6 +1129,7 @@ var ChatView = class extends import_obsidian3.ItemView {
     }
   }
   onRegistered(nick) {
+    console.log("[chatview] onRegistered", nick);
     this.inputEl.disabled = false;
     this.inputEl.placeholder = `Message as ${nick}\u2026`;
     this.statusEl.setText(`Registered as ${nick}`);
@@ -1115,6 +1138,7 @@ var ChatView = class extends import_obsidian3.ItemView {
   }
   catchUpState() {
     const nick = this.plugin.client.currentNick;
+    console.log("[chatview] catchUpState", nick, "channels", Array.from(this.plugin.client.channels.keys()));
     this.inputEl.disabled = false;
     this.inputEl.placeholder = `Message as ${nick}\u2026`;
     this.statusEl.setText(`Registered as ${nick}`);
@@ -1199,10 +1223,11 @@ var ChatView = class extends import_obsidian3.ItemView {
     return name.toLowerCase() === this.plugin.client.activeChannel.toLowerCase();
   }
   renderChannelList() {
+    console.log("[chatview] renderChannelList", this.plugin.client.channels.size);
     this.channelListEl.empty();
     const channels = Array.from(this.plugin.client.channels.values());
     if (!channels.length) {
-      this.channelListEl.createDiv({ cls: "freeq-empty", text: "No channels" });
+      this.channelListEl.createDiv({ cls: "freeq-empty", text: "No channels \u2014 use the Join button or set auto-join channels in settings." });
       return;
     }
     for (const ch of channels) {
@@ -1795,27 +1820,9 @@ var FreeQPlugin = class extends import_obsidian6.Plugin {
     let method = "";
     let effectiveDid = did;
     if (oauthSession) {
-      try {
-        const refreshed = await this.refreshBrokerToken(oauthSession.brokerToken);
-        if (refreshed) {
-          token = refreshed.token;
-          method = "web-token";
-          effectiveDid = refreshed.did;
-          const sess = this.settings.oauthSession;
-          if (sess) {
-            sess.webToken = refreshed.token;
-            sess.nick = refreshed.nick;
-            await this.saveSettings();
-          }
-        } else {
-          token = oauthSession.webToken;
-          method = "web-token";
-        }
-      } catch (e) {
-        console.warn("[freeq] broker refresh failed, using stored token:", e);
-        token = oauthSession.webToken;
-        method = "web-token";
-      }
+      token = oauthSession.webToken;
+      method = "web-token";
+      effectiveDid = oauthSession.did;
     } else if (did && appPassword) {
       try {
         const session = await this.createPdsSession(did, appPassword, pdsUrl);
@@ -1840,8 +1847,10 @@ var FreeQPlugin = class extends import_obsidian6.Plugin {
     const autoJoinUnsub = this.client.addListener((ev) => {
       if (ev.type === "registered") {
         autoJoinUnsub();
-        const channels = this.settings.autoJoinChannels.split(",").map((c) => c.trim()).filter(Boolean);
+        const channels = (this.settings.autoJoinChannels || "#general").split(",").map((c) => c.trim()).filter(Boolean);
+        console.log("[freeq] auto-joining channels:", channels);
         for (const ch of channels) {
+          console.log("[freeq] joining", ch);
           this.client.join(ch);
         }
         if (channels.length && !this.client.activeChannel) {
@@ -1849,6 +1858,7 @@ var FreeQPlugin = class extends import_obsidian6.Plugin {
         }
       }
     });
+    console.log("[freeq] connecting to", serverUrl, "as", desiredNick, "method", method, "did", effectiveDid);
     this.client.connect(serverUrl, desiredNick, token, effectiveDid, method);
     new import_obsidian6.Notice("Connecting to FreeQ\u2026");
   }
