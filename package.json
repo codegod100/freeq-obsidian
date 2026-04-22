@@ -22,7 +22,7 @@
     "@types/node": "^20.0.0",
     "@vitest/coverage-v8": "^4.1.5",
     "builtin-modules": "4.0.0",
-    "esbuild": "0.25.0",
+    "esbuild": "0.28.0",
     "jsdom": "^29.0.2",
     "obsidian": "latest",
     "tslib": "^2.6.0",
