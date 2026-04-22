@@ -198,6 +198,22 @@ export default class FreeQPlugin extends Plugin {
       );
     }
 
+    const autoJoinUnsub = this.client.addListener((ev) => {
+      if (ev.type === "registered") {
+        autoJoinUnsub();
+        const channels = this.settings.autoJoinChannels
+          .split(",")
+          .map((c) => c.trim())
+          .filter(Boolean);
+        for (const ch of channels) {
+          this.client.join(ch);
+        }
+        if (channels.length && !this.client.activeChannel) {
+          this.client.activeChannel = channels[0];
+        }
+      }
+    });
+
     this.client.connect(serverUrl, desiredNick, token, effectiveDid, method);
     new Notice("Connecting to FreeQ…");
   }

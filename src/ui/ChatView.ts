@@ -40,10 +40,18 @@ export class ChatView extends ItemView {
 
     this.buildLayout();
     this.bindEvents();
+
+    // Catch up state if client is already connected/registered
+    if (this.plugin.client.isConnected()) {
+      this.catchUpState();
+    }
   }
 
   async onClose() {
-    // cleanup if needed
+    if (this.unsubEvents) {
+      this.unsubEvents();
+      this.unsubEvents = null;
+    }
   }
 
   // ── Build ──
@@ -110,9 +118,11 @@ export class ChatView extends ItemView {
 
   // ── Event binding ──
 
+  private unsubEvents: (() => void) | null = null;
+
   private bindEvents() {
     const client = this.plugin.client;
-    client.onEvent = (ev) => this.handleEvent(ev);
+    this.unsubEvents = client.addListener((ev) => this.handleEvent(ev));
   }
 
   // ── Event handling ──
@@ -191,17 +201,15 @@ export class ChatView extends ItemView {
     this.inputEl.disabled = false;
     this.inputEl.placeholder = `Message as ${nick}…`;
     this.statusEl.setText(`Registered as ${nick}`);
-    // Auto-join channels
-    const channels = this.plugin.settings.autoJoinChannels
-      .split(",")
-      .map((c) => c.trim())
-      .filter(Boolean);
-    for (const ch of channels) {
-      this.plugin.client.join(ch);
-    }
-    if (channels.length && !this.plugin.client.activeChannel) {
-      this.plugin.client.activeChannel = channels[0];
-    }
+    this.renderChannelList();
+    this.renderMessages();
+  }
+
+  private catchUpState() {
+    const nick = this.plugin.client.currentNick;
+    this.inputEl.disabled = false;
+    this.inputEl.placeholder = `Message as ${nick}…`;
+    this.statusEl.setText(`Registered as ${nick}`);
     this.renderChannelList();
     this.renderMessages();
   }

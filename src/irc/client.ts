@@ -92,7 +92,7 @@ export class IRCClient {
   private batches = new Map<string, { type: string; target: string; messages: ChatMessage[] }>();
 
   // Callbacks
-  onEvent: ((ev: ClientEvent) => void) | null = null;
+  private listeners: ((ev: ClientEvent) => void)[] = [];
 
   // Pending WHOIS (background)
   private backgroundWhois = new Set<string>();
@@ -150,11 +150,24 @@ export class IRCClient {
     return this.registered && this.transport !== null;
   }
 
+  get currentNick(): string {
+    return this.nick;
+  }
+
+  addListener(fn: (ev: ClientEvent) => void): () => void {
+    this.listeners.push(fn);
+    return () => {
+      this.listeners = this.listeners.filter((l) => l !== fn);
+    };
+  }
+
   private emit(ev: ClientEvent) {
-    try {
-      this.onEvent?.(ev);
-    } catch (e) {
-      console.error("[irc] event handler error:", e);
+    for (const fn of this.listeners) {
+      try {
+        fn(ev);
+      } catch (e) {
+        console.error("[irc] event handler error:", e);
+      }
     }
   }
 

@@ -372,7 +372,7 @@ var IRCClient = class {
   // Batches (CHATHISTORY)
   batches = /* @__PURE__ */ new Map();
   // Callbacks
-  onEvent = null;
+  listeners = [];
   // Pending WHOIS (background)
   backgroundWhois = /* @__PURE__ */ new Set();
   // Message ID counter for local echo
@@ -414,11 +414,22 @@ var IRCClient = class {
   isConnected() {
     return this.registered && this.transport !== null;
   }
+  get currentNick() {
+    return this.nick;
+  }
+  addListener(fn) {
+    this.listeners.push(fn);
+    return () => {
+      this.listeners = this.listeners.filter((l) => l !== fn);
+    };
+  }
   emit(ev) {
-    try {
-      this.onEvent?.(ev);
-    } catch (e) {
-      console.error("[irc] event handler error:", e);
+    for (const fn of this.listeners) {
+      try {
+        fn(ev);
+      } catch (e) {
+        console.error("[irc] event handler error:", e);
+      }
     }
   }
   sendRegistration() {
@@ -969,8 +980,15 @@ var ChatView = class extends import_obsidian3.ItemView {
     this.container.addClass("freeq-chat-container");
     this.buildLayout();
     this.bindEvents();
+    if (this.plugin.client.isConnected()) {
+      this.catchUpState();
+    }
   }
   async onClose() {
+    if (this.unsubEvents) {
+      this.unsubEvents();
+      this.unsubEvents = null;
+    }
   }
   // ── Build ──
   buildLayout() {
@@ -1017,9 +1035,10 @@ var ChatView = class extends import_obsidian3.ItemView {
     this.memberListEl.style.display = "none";
   }
   // ── Event binding ──
+  unsubEvents = null;
   bindEvents() {
     const client = this.plugin.client;
-    client.onEvent = (ev) => this.handleEvent(ev);
+    this.unsubEvents = client.addListener((ev) => this.handleEvent(ev));
   }
   // ── Event handling ──
   handleEvent(ev) {
@@ -1091,13 +1110,14 @@ var ChatView = class extends import_obsidian3.ItemView {
     this.inputEl.disabled = false;
     this.inputEl.placeholder = `Message as ${nick}\u2026`;
     this.statusEl.setText(`Registered as ${nick}`);
-    const channels = this.plugin.settings.autoJoinChannels.split(",").map((c) => c.trim()).filter(Boolean);
-    for (const ch of channels) {
-      this.plugin.client.join(ch);
-    }
-    if (channels.length && !this.plugin.client.activeChannel) {
-      this.plugin.client.activeChannel = channels[0];
-    }
+    this.renderChannelList();
+    this.renderMessages();
+  }
+  catchUpState() {
+    const nick = this.plugin.client.currentNick;
+    this.inputEl.disabled = false;
+    this.inputEl.placeholder = `Message as ${nick}\u2026`;
+    this.statusEl.setText(`Registered as ${nick}`);
     this.renderChannelList();
     this.renderMessages();
   }
@@ -1817,6 +1837,18 @@ var FreeQPlugin = class extends import_obsidian6.Plugin {
         "Connecting as guest \u2014 configure OAuth or App Password in settings to authenticate."
       );
     }
+    const autoJoinUnsub = this.client.addListener((ev) => {
+      if (ev.type === "registered") {
+        autoJoinUnsub();
+        const channels = this.settings.autoJoinChannels.split(",").map((c) => c.trim()).filter(Boolean);
+        for (const ch of channels) {
+          this.client.join(ch);
+        }
+        if (channels.length && !this.client.activeChannel) {
+          this.client.activeChannel = channels[0];
+        }
+      }
+    });
     this.client.connect(serverUrl, desiredNick, token, effectiveDid, method);
     new import_obsidian6.Notice("Connecting to FreeQ\u2026");
   }
