@@ -1430,12 +1430,15 @@ var OAuthHandler = class {
     new import_obsidian5.Notice("Continue login in your browser\u2026");
     return waitForCallback;
   }
-  /** Called by registerObsidianProtocolHandler when obsidian://freeq-chat fires. */
+  /** Called by registerObsidianProtocolHandler when obsidian://freeq-chat fires.
+   *  Returns the decoded session so the caller can persist it even if there is
+   *  no pending promise (e.g. app was restarted before the callback arrived).
+   */
   handleCallback(params) {
     const oauthData = params.get("oauth");
     if (!oauthData) {
       this.reject(new Error("Missing OAuth data in protocol callback."));
-      return;
+      return null;
     }
     try {
       const session = this.decodeSession(oauthData);
@@ -1446,15 +1449,15 @@ var OAuthHandler = class {
         }
         this.callbackResolver(session);
         this.cleanup();
-      } else {
-        console.log("[freeq] OAuth callback received but no pending login.");
       }
+      return session;
     } catch (e) {
       this.reject(
         new Error(
           `Failed to parse OAuth callback: ${e instanceof Error ? e.message : String(e)}`
         )
       );
+      return null;
     }
   }
   decodeSession(base64urlData) {
@@ -1522,8 +1525,14 @@ var FreeQPlugin = class extends import_obsidian6.Plugin {
         for (const [key, value] of Object.entries(params)) {
           if (value) urlParams.set(key, String(value));
         }
-        this.oauth.handleCallback(urlParams);
-        new import_obsidian6.Notice("Authentication completed! Connecting\u2026");
+        const session = this.oauth.handleCallback(urlParams);
+        if (session) {
+          this.settings.oauthSession = session;
+          this.settings.did = session.did;
+          this.saveSettings();
+          new import_obsidian6.Notice("Authentication completed! Connecting\u2026");
+          this.connect();
+        }
       } catch (error) {
         console.error("[freeq] protocol handler error:", error);
         new import_obsidian6.Notice("Authentication error.");

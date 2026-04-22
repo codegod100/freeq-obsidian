@@ -61,12 +61,15 @@ export class OAuthHandler {
     return waitForCallback;
   }
 
-  /** Called by registerObsidianProtocolHandler when obsidian://freeq-chat fires. */
-  handleCallback(params: URLSearchParams): void {
+  /** Called by registerObsidianProtocolHandler when obsidian://freeq-chat fires.
+   *  Returns the decoded session so the caller can persist it even if there is
+   *  no pending promise (e.g. app was restarted before the callback arrived).
+   */
+  handleCallback(params: URLSearchParams): OAuthSession | null {
     const oauthData = params.get("oauth");
     if (!oauthData) {
       this.reject(new Error("Missing OAuth data in protocol callback."));
-      return;
+      return null;
     }
 
     try {
@@ -78,16 +81,15 @@ export class OAuthHandler {
         }
         this.callbackResolver(session);
         this.cleanup();
-      } else {
-        // No pending login — store for later (e.g., app was closed and reopened)
-        console.log("[freeq] OAuth callback received but no pending login.");
       }
+      return session;
     } catch (e) {
       this.reject(
         new Error(
           `Failed to parse OAuth callback: ${e instanceof Error ? e.message : String(e)}`
         )
       );
+      return null;
     }
   }
 

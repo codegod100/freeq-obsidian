@@ -32,8 +32,15 @@ export default class FreeQPlugin extends Plugin {
         for (const [key, value] of Object.entries(params)) {
           if (value) urlParams.set(key, String(value));
         }
-        this.oauth.handleCallback(urlParams);
-        new Notice("Authentication completed! Connecting…");
+        const session = this.oauth.handleCallback(urlParams);
+        if (session) {
+          this.settings.oauthSession = session;
+          this.settings.did = session.did;
+          this.saveSettings();
+          new Notice("Authentication completed! Connecting…");
+          // Auto-connect using the fresh session
+          this.connect();
+        }
       } catch (error) {
         console.error("[freeq] protocol handler error:", error);
         new Notice("Authentication error.");
