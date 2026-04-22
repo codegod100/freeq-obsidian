@@ -31,7 +31,7 @@ describe("FreeQPlugin connect flow", () => {
     expect(joinSpy).toHaveBeenCalledWith("#test");
   });
 
-  it("falls back to stored webToken when broker refresh fails", async () => {
+  it("aborts connection when broker refresh fails", async () => {
     const plugin = createTestPlugin({
       oauthSession: {
         brokerToken: "expired",
@@ -49,10 +49,7 @@ describe("FreeQPlugin connect flow", () => {
     const connectSpy = vi.spyOn(plugin.client, "connect");
 
     await plugin.connect();
-    await vi.waitFor(() => expect(connectSpy).toHaveBeenCalled());
-
-    const [, , tokenArg] = connectSpy.mock.calls[0];
-    expect(tokenArg).toBe("fallback-token");
+    expect(connectSpy).not.toHaveBeenCalled();
   });
 
   it("sets activeChannel to first auto-join channel", async () => {

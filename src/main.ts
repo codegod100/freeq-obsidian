@@ -156,8 +156,36 @@ export default class FreeQPlugin extends Plugin {
     let method = "";
     let effectiveDid = did;
 
-    // Try OAuth session first
-    if (oauthSession) {
+    // Try OAuth session first — refresh webToken via broker
+    if (oauthSession?.brokerToken) {
+      try {
+        const refreshed = await this.refreshBrokerToken(oauthSession.brokerToken);
+        this.settings.oauthSession = {
+          ...oauthSession,
+          webToken: refreshed.token,
+          nick: refreshed.nick,
+          did: refreshed.did,
+          handle: refreshed.handle,
+          createdAt: Date.now(),
+        };
+        await this.saveSettings();
+        token = refreshed.token;
+        method = "web-token";
+        effectiveDid = refreshed.did;
+      } catch (e: any) {
+        this.isConnecting = false;
+        console.error("[freeq] broker refresh failed:", e);
+        if (e?.message?.includes("expired")) {
+          this.settings.oauthSession = undefined;
+          await this.saveSettings();
+          new Notice("Session expired. Please log in again.");
+        } else {
+          new Notice("Failed to refresh session — try reconnecting.");
+        }
+        return;
+      }
+    } else if (oauthSession) {
+      // Use existing webToken directly (reinstall / dev only)
       token = oauthSession.webToken;
       method = "web-token";
       effectiveDid = oauthSession.did;
@@ -274,34 +302,27 @@ export default class FreeQPlugin extends Plugin {
 
   private async refreshBrokerToken(
     brokerToken: string
-  ): Promise<{ token: string; nick: string; did: string; handle: string } | null> {
+  ): Promise<{ token: string; nick: string; did: string; handle: string }> {
     const brokerBody = JSON.stringify({ broker_token: brokerToken });
     const url = this.settings.brokerUrl.replace(/\/$/, "") + "/session";
 
-    for (let attempt = 0; attempt < 3; attempt++) {
-      try {
-        const res = await requestUrl({
-          url,
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: brokerBody,
-        });
-        return res.json as { token: string; nick: string; did: string; handle: string };
-      } catch (e: any) {
-        const status = e?.status ?? 0;
-        if (status === 401) {
-          this.settings.oauthSession = undefined;
-          await this.saveSettings();
-          throw new Error("Broker token expired. Please log in again.");
-        }
-        if (status === 502 && attempt < 2) {
-          await new Promise((r) => setTimeout(r, 500 * (attempt + 1)));
-          continue;
-        }
-        throw e;
+    const res = await requestUrl({
+      url,
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: brokerBody,
+    });
+
+    if (res.status >= 400) {
+      if (res.status === 401) {
+        this.settings.oauthSession = undefined;
+        await this.saveSettings();
+        throw new Error("Broker token expired. Please log in again.");
       }
+      throw new Error(`Broker returned ${res.status}`);
     }
-    return null;
+
+    return res.json as { token: string; nick: string; did: string; handle: string };
   }
 
   // ── PDS Session (app-password fallback) ──

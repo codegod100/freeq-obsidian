@@ -1850,7 +1850,34 @@ var FreeQPlugin = class extends import_obsidian6.Plugin {
     let token = "";
     let method = "";
     let effectiveDid = did;
-    if (oauthSession) {
+    if (oauthSession?.brokerToken) {
+      try {
+        const refreshed = await this.refreshBrokerToken(oauthSession.brokerToken);
+        this.settings.oauthSession = {
+          ...oauthSession,
+          webToken: refreshed.token,
+          nick: refreshed.nick,
+          did: refreshed.did,
+          handle: refreshed.handle,
+          createdAt: Date.now()
+        };
+        await this.saveSettings();
+        token = refreshed.token;
+        method = "web-token";
+        effectiveDid = refreshed.did;
+      } catch (e) {
+        this.isConnecting = false;
+        console.error("[freeq] broker refresh failed:", e);
+        if (e?.message?.includes("expired")) {
+          this.settings.oauthSession = void 0;
+          await this.saveSettings();
+          new import_obsidian6.Notice("Session expired. Please log in again.");
+        } else {
+          new import_obsidian6.Notice("Failed to refresh session \u2014 try reconnecting.");
+        }
+        return;
+      }
+    } else if (oauthSession) {
       token = oauthSession.webToken;
       method = "web-token";
       effectiveDid = oauthSession.did;
@@ -1948,30 +1975,21 @@ var FreeQPlugin = class extends import_obsidian6.Plugin {
   async refreshBrokerToken(brokerToken) {
     const brokerBody = JSON.stringify({ broker_token: brokerToken });
     const url = this.settings.brokerUrl.replace(/\/$/, "") + "/session";
-    for (let attempt = 0; attempt < 3; attempt++) {
-      try {
-        const res = await (0, import_obsidian6.requestUrl)({
-          url,
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: brokerBody
-        });
-        return res.json;
-      } catch (e) {
-        const status = e?.status ?? 0;
-        if (status === 401) {
-          this.settings.oauthSession = void 0;
-          await this.saveSettings();
-          throw new Error("Broker token expired. Please log in again.");
-        }
-        if (status === 502 && attempt < 2) {
-          await new Promise((r) => setTimeout(r, 500 * (attempt + 1)));
-          continue;
-        }
-        throw e;
+    const res = await (0, import_obsidian6.requestUrl)({
+      url,
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: brokerBody
+    });
+    if (res.status >= 400) {
+      if (res.status === 401) {
+        this.settings.oauthSession = void 0;
+        await this.saveSettings();
+        throw new Error("Broker token expired. Please log in again.");
       }
+      throw new Error(`Broker returned ${res.status}`);
     }
-    return null;
+    return res.json;
   }
   // ── PDS Session (app-password fallback) ──
   async createPdsSession(didOrHandle, appPassword, pdsUrl) {

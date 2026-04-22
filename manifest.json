@@ -1,7 +1,7 @@
 {
   "id": "freeq-chat",
   "name": "FreeQ Chat",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "minAppVersion": "1.6.0",
   "description": "Chat on FreeQ IRC from inside Obsidian. Clip messages to your vault.",
   "author": "freeq",
