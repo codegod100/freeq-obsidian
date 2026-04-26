@@ -268,9 +268,7 @@ export default class FreeQPlugin extends Plugin {
           .split(",")
           .map((c) => c.trim())
           .filter(Boolean);
-        console.log("[freeq] auto-joining channels:", channels);
         for (const ch of channels) {
-          console.log("[freeq] joining", ch);
           this.client.join(ch);
         }
         if (channels.length && !this.client.activeChannel) {
@@ -298,7 +296,6 @@ export default class FreeQPlugin extends Plugin {
       }
     });
 
-    console.log("[freeq] connecting to", serverUrl, "as", desiredNick, "method", method, "did", effectiveDid);
     this.client.connect(serverUrl, desiredNick, token, effectiveDid, method);
     new Notice("Connecting to FreeQ…");
   }

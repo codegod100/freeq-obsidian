@@ -51,9 +51,6 @@ export class Transport {
       for (const line of data.split('\n')) {
         const trimmed = line.replace(/\r$/, '');
         if (trimmed) {
-          if (!trimmed.startsWith("PING")) {
-            console.log('[transport] ←', trimmed);
-          }
           this.opts.onLine(trimmed);
         }
       }
@@ -79,9 +76,6 @@ export class Transport {
         console.warn('[transport] High bufferedAmount, forcing reconnect');
         this.ws.close();
         return;
-      }
-      if (!line.startsWith("PONG")) {
-        console.log('[transport] →', line.trim());
       }
       this.ws.send(line);
     } else {

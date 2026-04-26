@@ -299,9 +299,6 @@ var Transport = class _Transport {
       for (const line of data.split("\n")) {
         const trimmed = line.replace(/\r$/, "");
         if (trimmed) {
-          if (!trimmed.startsWith("PING")) {
-            console.log("[transport] \u2190", trimmed);
-          }
           this.opts.onLine(trimmed);
         }
       }
@@ -322,9 +319,6 @@ var Transport = class _Transport {
         console.warn("[transport] High bufferedAmount, forcing reconnect");
         this.ws.close();
         return;
-      }
-      if (!line.startsWith("PONG")) {
-        console.log("[transport] \u2192", line.trim());
       }
       this.ws.send(line);
     } else {
@@ -407,7 +401,6 @@ var IRCClient = class {
   // Message ID counter for local echo
   localIdSeq = 0;
   connect(url, desiredNick, saslToken, saslDid, saslMethod) {
-    console.log("[irc] connect() called", url, desiredNick, saslMethod);
     this.disconnect();
     this.url = url;
     this.desiredNick = desiredNick;
@@ -454,9 +447,6 @@ var IRCClient = class {
     };
   }
   emit(ev) {
-    if (ev.type !== "message" && ev.type !== "serverMessage") {
-      console.log("[irc] emit", ev.type, ev);
-    }
     for (const fn of this.listeners) {
       try {
         fn(ev);
@@ -467,16 +457,12 @@ var IRCClient = class {
   }
   sendRegistration() {
     this.ackedCaps = /* @__PURE__ */ new Set();
-    console.log("[irc] sendRegistration", this.desiredNick, "sasl:", this.saslMethod || "none");
     this.raw("CAP LS 302");
     this.raw(`NICK ${this.desiredNick}`);
     this.raw(`USER ${this.desiredNick} 0 * :FreeQ Obsidian`);
   }
   // ── Sending ──
   raw(line) {
-    if (!line.startsWith("PONG")) {
-      console.log("[irc] raw \u2192", line);
-    }
     this.transport?.send(line + "\r\n");
   }
   sendPrivmsg(target, text, replyTo) {
@@ -498,7 +484,6 @@ var IRCClient = class {
     this.raw(`PRIVMSG ${target} :ACTION ${text}`);
   }
   join(channel) {
-    console.log("[irc] join()", channel);
     this.raw(`JOIN ${channel}`);
     this.ensureChannel(channel);
     this.activeChannel = channel;
@@ -580,9 +565,6 @@ var IRCClient = class {
   // ── Receiving ──
   async handleLine(line) {
     const m = parse(line);
-    if (m.command !== "PING") {
-      console.log("[irc] handleLine", line.slice(0, 120));
-    }
     switch (m.command) {
       case "PING": {
         const payload = m.params[0] || "";
@@ -1037,7 +1019,6 @@ var ChatView = class extends import_obsidian3.ItemView {
     return "message-circle";
   }
   async onOpen() {
-    console.log("[chatview] onOpen called");
     if (!this.containerEl.children[1]) {
       console.error("[chatview] containerEl.children[1] is missing \u2014 cannot build UI");
       return;
@@ -1047,7 +1028,6 @@ var ChatView = class extends import_obsidian3.ItemView {
     this.container.addClass("freeq-chat-container");
     this.buildLayout();
     this.bindEvents();
-    console.log("[chatview] isConnected?", this.plugin.client.isConnected(), "channels", Array.from(this.plugin.client.channels.keys()));
     if (this.plugin.client.isConnected()) {
       this.catchUpState();
     }
@@ -1116,7 +1096,6 @@ var ChatView = class extends import_obsidian3.ItemView {
   // ── Event handling ──
   handleEvent(ev) {
     if (ev.type !== "message" && ev.type !== "serverMessage") {
-      console.log("[chatview] handleEvent", ev.type, ev);
     }
     switch (ev.type) {
       case "state":
@@ -1186,7 +1165,6 @@ var ChatView = class extends import_obsidian3.ItemView {
     }
   }
   onRegistered(nick) {
-    console.log("[chatview] onRegistered", nick);
     this.inputEl.disabled = false;
     this.inputEl.placeholder = `Message as ${nick}\u2026`;
     this.statusEl.setText(`Registered as ${nick}`);
@@ -1195,7 +1173,6 @@ var ChatView = class extends import_obsidian3.ItemView {
   }
   catchUpState() {
     const nick = this.plugin.client.currentNick;
-    console.log("[chatview] catchUpState", nick, "channels", Array.from(this.plugin.client.channels.keys()));
     this.inputEl.disabled = false;
     this.inputEl.placeholder = `Message as ${nick}\u2026`;
     this.statusEl.setText(`Registered as ${nick}`);
@@ -1281,7 +1258,6 @@ var ChatView = class extends import_obsidian3.ItemView {
     return name.toLowerCase() === this.plugin.client.activeChannel.toLowerCase();
   }
   renderChannelList() {
-    console.log("[chatview] renderChannelList", this.plugin.client.channels.size);
     this.channelListEl.empty();
     const channels = Array.from(this.plugin.client.channels.values());
     if (!channels.length) {
@@ -2288,9 +2264,7 @@ var FreeQPlugin = class extends import_obsidian8.Plugin {
           this.registrationTimer = null;
         }
         const channels = (this.settings.autoJoinChannels || "#general").split(",").map((c) => c.trim()).filter(Boolean);
-        console.log("[freeq] auto-joining channels:", channels);
         for (const ch of channels) {
-          console.log("[freeq] joining", ch);
           this.client.join(ch);
         }
         if (channels.length && !this.client.activeChannel) {
@@ -2316,7 +2290,6 @@ var FreeQPlugin = class extends import_obsidian8.Plugin {
         }
       }
     });
-    console.log("[freeq] connecting to", serverUrl, "as", desiredNick, "method", method, "did", effectiveDid);
     this.client.connect(serverUrl, desiredNick, token, effectiveDid, method);
     new import_obsidian8.Notice("Connecting to FreeQ\u2026");
   }

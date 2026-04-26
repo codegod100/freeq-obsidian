@@ -108,7 +108,7 @@ export class IRCClient {
     saslDid?: string,
     saslMethod?: string
   ) {
-    console.log("[irc] connect() called", url, desiredNick, saslMethod);
+
     this.disconnect();
     this.url = url;
     this.desiredNick = desiredNick;
@@ -164,9 +164,6 @@ export class IRCClient {
   }
 
   private emit(ev: ClientEvent) {
-    if (ev.type !== "message" && ev.type !== "serverMessage") {
-      console.log("[irc] emit", ev.type, ev);
-    }
     for (const fn of this.listeners) {
       try {
         fn(ev);
@@ -178,7 +175,7 @@ export class IRCClient {
 
   private sendRegistration() {
     this.ackedCaps = new Set();
-    console.log("[irc] sendRegistration", this.desiredNick, "sasl:", this.saslMethod || "none");
+
     this.raw("CAP LS 302");
     this.raw(`NICK ${this.desiredNick}`);
     this.raw(`USER ${this.desiredNick} 0 * :FreeQ Obsidian`);
@@ -187,9 +184,6 @@ export class IRCClient {
   // ── Sending ──
 
   raw(line: string) {
-    if (!line.startsWith("PONG")) {
-      console.log("[irc] raw →", line);
-    }
     this.transport?.send(line + "\r\n");
   }
 
@@ -215,7 +209,6 @@ export class IRCClient {
   }
 
   join(channel: string) {
-    console.log("[irc] join()", channel);
     this.raw(`JOIN ${channel}`);
     this.ensureChannel(channel);
     this.activeChannel = channel;
@@ -309,10 +302,6 @@ export class IRCClient {
 
   private async handleLine(line: string) {
     const m = parse(line);
-    if (m.command !== "PING") {
-      console.log("[irc] handleLine", line.slice(0, 120));
-    }
-
     switch (m.command) {
       case "PING": {
         const payload = m.params[0] || "";

@@ -36,7 +36,7 @@ export class ChatView extends ItemView {
   }
 
   async onOpen() {
-    console.log("[chatview] onOpen called");
+
     if (!this.containerEl.children[1]) {
       console.error("[chatview] containerEl.children[1] is missing — cannot build UI");
       return;
@@ -49,7 +49,7 @@ export class ChatView extends ItemView {
     this.bindEvents();
 
     // Catch up state if client is already connected/registered
-    console.log("[chatview] isConnected?", this.plugin.client.isConnected(), "channels", Array.from(this.plugin.client.channels.keys()));
+
     if (this.plugin.client.isConnected()) {
       this.catchUpState();
     }
@@ -144,7 +144,7 @@ export class ChatView extends ItemView {
 
   private handleEvent(ev: ClientEvent) {
     if (ev.type !== "message" && ev.type !== "serverMessage") {
-      console.log("[chatview] handleEvent", ev.type, ev);
+
     }
     switch (ev.type) {
       case "state":
@@ -220,7 +220,7 @@ export class ChatView extends ItemView {
   }
 
   private onRegistered(nick: string) {
-    console.log("[chatview] onRegistered", nick);
+
     this.inputEl.disabled = false;
     this.inputEl.placeholder = `Message as ${nick}…`;
     this.statusEl.setText(`Registered as ${nick}`);
@@ -230,7 +230,7 @@ export class ChatView extends ItemView {
 
   private catchUpState() {
     const nick = this.plugin.client.currentNick;
-    console.log("[chatview] catchUpState", nick, "channels", Array.from(this.plugin.client.channels.keys()));
+
     this.inputEl.disabled = false;
     this.inputEl.placeholder = `Message as ${nick}…`;
     this.statusEl.setText(`Registered as ${nick}`);
@@ -327,7 +327,7 @@ export class ChatView extends ItemView {
   }
 
   private renderChannelList() {
-    console.log("[chatview] renderChannelList", this.plugin.client.channels.size);
+
     this.channelListEl.empty();
     const channels = Array.from(this.plugin.client.channels.values());
     if (!channels.length) {
