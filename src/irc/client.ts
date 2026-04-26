@@ -187,7 +187,9 @@ export class IRCClient {
   // ── Sending ──
 
   raw(line: string) {
-    console.log("[irc] raw →", line);
+    if (!line.startsWith("PONG")) {
+      console.log("[irc] raw →", line);
+    }
     this.transport?.send(line + "\r\n");
   }
 
@@ -306,9 +308,10 @@ export class IRCClient {
   // ── Receiving ──
 
   private async handleLine(line: string) {
-    console.log("[irc] handleLine", line.slice(0, 120));
     const m = parse(line);
-    console.log("[irc] parsed cmd=", m.command, "prefix=", m.prefix);
+    if (m.command !== "PING") {
+      console.log("[irc] handleLine", line.slice(0, 120));
+    }
 
     switch (m.command) {
       case "PING": {

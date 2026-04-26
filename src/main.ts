@@ -10,6 +10,7 @@ import { ChatView, VIEW_TYPE_FREEQ } from "./ui/ChatView";
 import { Clipper } from "./clip/clipper";
 import { OAuthHandler, type OAuthSession } from "./auth/oauth";
 import { JoinChannelModal } from "./ui/JoinChannelModal";
+import { uploadBlobViaFreeQ } from "./pds/blob";
 
 export default class FreeQPlugin extends Plugin {
   settings: FreeQSettings;
@@ -99,6 +100,12 @@ export default class FreeQPlugin extends Plugin {
       },
     });
 
+    this.addCommand({
+      id: "freeq-upload-blob",
+      name: "Upload note to PDS blob",
+      callback: () => this.uploadNoteBlob(),
+    });
+
     this.addSettingTab(new FreeQSettingTab(this.app, this));
 
     // Auto-connect on load if we have an OAuth session
@@ -173,16 +180,41 @@ export default class FreeQPlugin extends Plugin {
         method = "web-token";
         effectiveDid = refreshed.did;
       } catch (e: any) {
-        this.isConnecting = false;
         console.error("[freeq] broker refresh failed:", e);
-        if (e?.message?.includes("expired")) {
+        // Broker token expired or rejected — auto re-auth
+        const handle = oauthSession?.handle;
+        if (handle) {
+          try {
+            new Notice("Session expired — re-authenticating…");
+            await this.initiateOAuth(handle);
+            const refreshed = await this.refreshBrokerToken(this.settings.oauthSession!.brokerToken);
+            this.settings.oauthSession = {
+              ...this.settings.oauthSession!,
+              webToken: refreshed.token,
+              nick: refreshed.nick,
+              did: refreshed.did,
+              handle: refreshed.handle,
+              createdAt: Date.now(),
+            };
+            await this.saveSettings();
+            token = refreshed.token;
+            method = "web-token";
+            effectiveDid = refreshed.did;
+          } catch (reauthErr) {
+            this.isConnecting = false;
+            console.error("[freeq] re-auth failed:", reauthErr);
+            this.settings.oauthSession = undefined;
+            await this.saveSettings();
+            new Notice("Re-authentication failed. Please log in again.");
+            return;
+          }
+        } else {
+          this.isConnecting = false;
           this.settings.oauthSession = undefined;
           await this.saveSettings();
           new Notice("Session expired. Please log in again.");
-        } else {
-          new Notice("Failed to refresh session — try reconnecting.");
+          return;
         }
-        return;
       }
     } else if (oauthSession) {
       // Use existing webToken directly (reinstall / dev only)
@@ -279,6 +311,53 @@ export default class FreeQPlugin extends Plugin {
     }
     this.client.disconnect();
     new Notice("Disconnected from FreeQ.");
+  }
+
+  // ── PDS Blob Upload ──
+
+  async uploadNoteBlob() {
+    const file = this.app.workspace.getActiveFile();
+    if (!file) {
+      new Notice("No active note.");
+      return;
+    }
+
+    // Need active IRC connection for the server to recognize our session
+    if (!this.client.isConnected()) {
+      new Notice("Not connected to FreeQ server. Connect first.");
+      return;
+    }
+
+    // Need OAuth session for DID and to have pushed PDS creds to server
+    const did = this.settings.oauthSession?.did || this.settings.did;
+    if (!did) {
+      new Notice("Not authenticated. Log in via OAuth first.");
+      return;
+    }
+
+    // Server URL for the upload endpoint (convert wss:// to https://)
+    const wsUrl = this.settings.serverUrl;
+    if (!wsUrl) {
+      new Notice("FreeQ server URL not configured.");
+      return;
+    }
+    const serverUrl = wsUrl.replace(/^wss:\/\//, "https://").replace(/^ws:\/\//, "http://").replace(/\/irc$/, "");
+
+    const content = await this.app.vault.read(file);
+
+    try {
+      const result = await uploadBlobViaFreeQ({
+        serverUrl,
+        did,
+        content,
+        filename: file.name,
+      });
+      await navigator.clipboard.writeText(result.url);
+      new Notice(`Blob URL copied to clipboard`);
+    } catch (e: any) {
+      console.error("[freeq] blob upload failed:", e);
+      new Notice(`Upload failed: ${e.message || String(e)}`);
+    }
   }
 
   async activateView() {

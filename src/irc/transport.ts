@@ -51,7 +51,9 @@ export class Transport {
       for (const line of data.split('\n')) {
         const trimmed = line.replace(/\r$/, '');
         if (trimmed) {
-          console.log('[transport] ←', trimmed);
+          if (!trimmed.startsWith("PING")) {
+            console.log('[transport] ←', trimmed);
+          }
           this.opts.onLine(trimmed);
         }
       }
@@ -78,7 +80,9 @@ export class Transport {
         this.ws.close();
         return;
       }
-      console.log('[transport] →', line.trim());
+      if (!line.startsWith("PONG")) {
+        console.log('[transport] →', line.trim());
+      }
       this.ws.send(line);
     } else {
       console.warn('[transport] Dropped message (ws not open, readyState=%s):', this.ws?.readyState, line);

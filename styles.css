@@ -168,6 +168,40 @@
   word-break: break-word;
   white-space: pre-wrap;
   line-height: 1.4;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+/* ── Links ── */
+
+.freeq-link {
+  color: var(--text-accent);
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.freeq-link:hover {
+  text-decoration: underline;
+}
+
+.freeq-clip-link-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0 2px;
+  font-size: 11px;
+  line-height: 1;
+  opacity: 0;
+  vertical-align: middle;
+  transition: opacity 0.15s;
+}
+
+.freeq-message:hover .freeq-clip-link-btn {
+  opacity: 0.6;
+}
+
+.freeq-clip-link-btn:hover {
+  opacity: 1 !important;
 }
 
 /* Input */

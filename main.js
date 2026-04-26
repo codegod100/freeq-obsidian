@@ -26,7 +26,7 @@ __export(main_exports, {
   default: () => FreeQPlugin
 });
 module.exports = __toCommonJS(main_exports);
-var import_obsidian6 = require("obsidian");
+var import_obsidian8 = require("obsidian");
 
 // src/settings.ts
 var import_obsidian = require("obsidian");
@@ -299,7 +299,9 @@ var Transport = class _Transport {
       for (const line of data.split("\n")) {
         const trimmed = line.replace(/\r$/, "");
         if (trimmed) {
-          console.log("[transport] \u2190", trimmed);
+          if (!trimmed.startsWith("PING")) {
+            console.log("[transport] \u2190", trimmed);
+          }
           this.opts.onLine(trimmed);
         }
       }
@@ -321,7 +323,9 @@ var Transport = class _Transport {
         this.ws.close();
         return;
       }
-      console.log("[transport] \u2192", line.trim());
+      if (!line.startsWith("PONG")) {
+        console.log("[transport] \u2192", line.trim());
+      }
       this.ws.send(line);
     } else {
       console.warn("[transport] Dropped message (ws not open, readyState=%s):", this.ws?.readyState, line);
@@ -470,7 +474,9 @@ var IRCClient = class {
   }
   // ── Sending ──
   raw(line) {
-    console.log("[irc] raw \u2192", line);
+    if (!line.startsWith("PONG")) {
+      console.log("[irc] raw \u2192", line);
+    }
     this.transport?.send(line + "\r\n");
   }
   sendPrivmsg(target, text, replyTo) {
@@ -573,9 +579,10 @@ var IRCClient = class {
   }
   // ── Receiving ──
   async handleLine(line) {
-    console.log("[irc] handleLine", line.slice(0, 120));
     const m = parse(line);
-    console.log("[irc] parsed cmd=", m.command, "prefix=", m.prefix);
+    if (m.command !== "PING") {
+      console.log("[irc] handleLine", line.slice(0, 120));
+    }
     switch (m.command) {
       case "PING": {
         const payload = m.params[0] || "";
@@ -1371,7 +1378,7 @@ var ChatView = class extends import_obsidian3.ItemView {
     if (msg.isAction && msg.from) {
       body.setText(`* ${msg.from} ${msg.text}`);
     } else {
-      body.setText(msg.text);
+      this.renderMessageBody(body, msg.text, msg);
     }
     el.addEventListener("contextmenu", (e) => {
       e.preventDefault();
@@ -1395,6 +1402,65 @@ var ChatView = class extends import_obsidian3.ItemView {
   truncateText(text, max) {
     if (text.length <= max) return text;
     return text.slice(0, max - 1) + "\u2026";
+  }
+  // ── Linkify ──
+  renderMessageBody(el, text, msg) {
+    const mdLinkRe = /\[([^\]]+)\]\(([^)]+)\)/g;
+    const urlRe = /https?:\/\/[^\s)>,\]]+/g;
+    const matches = [];
+    let m;
+    while ((m = mdLinkRe.exec(text)) !== null) {
+      matches.push({ start: m.index, end: m.index + m[0].length, text: m[1], url: m[2], isMarkdown: true });
+    }
+    while ((m = urlRe.exec(text)) !== null) {
+      const inside = matches.some((lm) => m.index >= lm.start && m.index < lm.end);
+      if (!inside) {
+        matches.push({ start: m.index, end: m.index + m[0].length, text: m[0], url: m[0], isMarkdown: false });
+      }
+    }
+    matches.sort((a, b) => a.start - b.start);
+    if (matches.length === 0) {
+      el.setText(text);
+      return;
+    }
+    let lastEnd = 0;
+    for (const lm of matches) {
+      if (lm.start > lastEnd) {
+        el.appendChild(document.createTextNode(text.slice(lastEnd, lm.start)));
+      }
+      const a = el.createEl("a", {
+        cls: "freeq-link",
+        text: lm.text,
+        attr: { href: lm.url }
+      });
+      a.addEventListener("click", (e) => {
+        e.preventDefault();
+        window.require("electron").shell.openExternal(lm.url);
+      });
+      const binaryExts = /\.(png|jpe?g|gif|webp|svg|ico|bmp|avif|mp4|webm|mkv|avi|mov|mp3|ogg|opus|flac|wav|m4[ap]|zip|gz|tar|rar|7z|bz2|xz|pdf|docx?|xlsx?|pptx?|od[st]|dmg|iso|exe|msi|deb|rpm)$/i;
+      if (!binaryExts.test(lm.url)) {
+        const clipBtn = el.createEl("button", {
+          cls: "freeq-clip-link-btn",
+          attr: { title: "Clip link to vault" }
+        });
+        clipBtn.setText("\u{1F4CE}");
+        clipBtn.addEventListener("click", async (e) => {
+          e.stopPropagation();
+          e.preventDefault();
+          const channel = this.plugin.client.activeChannel;
+          const path = await this.plugin.clipper.clipLink({ url: lm.url, text: lm.text, channel, msg });
+          if (path) {
+            new import_obsidian3.Notice(`Clipped to ${path}`);
+          } else {
+            new import_obsidian3.Notice("Failed to clip link.");
+          }
+        });
+      }
+      lastEnd = lm.end;
+    }
+    if (lastEnd < text.length) {
+      el.appendChild(document.createTextNode(text.slice(lastEnd)));
+    }
   }
   showMessageMenu(event, msg, channel) {
     const menu = new import_obsidian3.Menu();
@@ -1478,7 +1544,61 @@ var ChatView = class extends import_obsidian3.ItemView {
 };
 
 // src/clip/clipper.ts
+var import_obsidian5 = require("obsidian");
+
+// src/ui/ClipLinkModal.ts
 var import_obsidian4 = require("obsidian");
+var ClipLinkModal = class extends import_obsidian4.Modal {
+  onSubmit;
+  defaultValue;
+  constructor(app, defaultValue, onSubmit) {
+    super(app);
+    this.defaultValue = defaultValue;
+    this.onSubmit = onSubmit;
+  }
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.createEl("h3", { text: "Clip link as note" });
+    const input = contentEl.createEl("input", {
+      type: "text",
+      value: this.defaultValue
+    });
+    input.style.width = "100%";
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        const value = input.value.trim();
+        if (value) {
+          this.onSubmit(value);
+          this.close();
+        }
+      }
+      if (e.key === "Escape") {
+        this.close();
+      }
+    });
+    const btnRow = contentEl.createDiv({ cls: "clip-link-modal-btns" });
+    const cancelBtn = btnRow.createEl("button", { text: "Cancel" });
+    cancelBtn.addEventListener("click", () => this.close());
+    const saveBtn = btnRow.createEl("button", { text: "Save", cls: "mod-cta" });
+    saveBtn.addEventListener("click", () => {
+      const value = input.value.trim();
+      if (value) {
+        this.onSubmit(value);
+        this.close();
+      }
+    });
+    input.focus();
+    input.select();
+  }
+  onClose() {
+    const { contentEl } = this;
+    contentEl.empty();
+  }
+};
+
+// src/clip/clipper.ts
 var Clipper = class {
   constructor(app, settings) {
     this.app = app;
@@ -1488,7 +1608,7 @@ var Clipper = class {
   settings;
   async clip(context) {
     const { channel, msg } = context;
-    const timestamp = (0, import_obsidian4.moment)(msg.timestamp).format("YYYY-MM-DD HH:mm:ss");
+    const timestamp = (0, import_obsidian5.moment)(msg.timestamp).format("YYYY-MM-DD HH:mm:ss");
     let text = this.settings.clipTemplate.replace(/{{text}}/g, msg.text).replace(/{{from}}/g, msg.from).replace(/{{channel}}/g, channel).replace(/{{timestamp}}/g, timestamp).replace(/{{msgid}}/g, msg.id).replace(
       /{{url}}/g,
       `https://irc.freeq.at/channel/${encodeURIComponent(channel)}/msg/${msg.id}`
@@ -1505,19 +1625,103 @@ var Clipper = class {
       return null;
     }
   }
+  async clipLink(context) {
+    const { url, text, channel, msg } = context;
+    const noteName = await new Promise((resolve) => {
+      const defaultName = text || this.slugifyUrl(url);
+      let submitted = false;
+      const modal = new ClipLinkModal(this.app, defaultName, (name) => {
+        submitted = true;
+        resolve(name);
+      });
+      const origOnClose = modal.onClose.bind(modal);
+      modal.onClose = () => {
+        origOnClose();
+        if (!submitted) resolve(null);
+      };
+      modal.open();
+    });
+    if (!noteName) return null;
+    let body = "";
+    try {
+      const res = await (0, import_obsidian5.requestUrl)({ url, method: "GET" });
+      body = res.text;
+    } catch (e) {
+      console.warn("[freeq] clipLink fetch failed:", url, e);
+      body = "";
+    }
+    const timestamp = (0, import_obsidian5.moment)(msg.timestamp).format("YYYY-MM-DD HH:mm:ss");
+    const frontmatter = [
+      "---",
+      `source: ${url}`,
+      `clipped: ${(0, import_obsidian5.moment)().format("YYYY-MM-DDTHH:mm:ssZ")}`,
+      `from: ${msg.from}`,
+      `channel: ${channel}`,
+      "---",
+      ""
+    ].join("\n");
+    const header = `# ${noteName}
+
+`;
+    const linkLine = `> [${text}](${url}) \u2014 @${msg.from} in ${channel} at ${timestamp}
+
+`;
+    let content = "";
+    if (body.startsWith("<") || body.includes("<html")) {
+      const titleMatch = body.match(/<title[^>]*>([^<]+)<\/title>/i);
+      const title = titleMatch ? titleMatch[1].trim() : "";
+      const stripped = body.replace(/<script[^>]*>[\s\S]*?<\/script>/gi, "").replace(/<style[^>]*>[\s\S]*?<\/style>/gi, "").replace(/<[^>]+>/g, " ").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&nbsp;/g, " ").replace(/\s+/g, " ").trim();
+      content = title ? `## ${title}
+
+${stripped.slice(0, 1e4)}` : stripped.slice(0, 1e4);
+    } else {
+      content = body.slice(0, 1e4);
+    }
+    const noteText = frontmatter + header + linkLine + content + "\n";
+    const folderPath = (0, import_obsidian5.normalizePath)(this.settings.clipFolder || "FreeQ Clippings");
+    const folder = this.app.vault.getAbstractFileByPath(folderPath);
+    if (!folder) {
+      await this.app.vault.createFolder(folderPath);
+    }
+    const fileName = noteName.endsWith(".md") ? noteName : `${noteName}.md`;
+    const filePath = (0, import_obsidian5.normalizePath)(`${folderPath}/${fileName}`);
+    const existing = this.app.vault.getAbstractFileByPath(filePath);
+    if (existing) {
+      new import_obsidian5.Notice(`Note "${fileName}" already exists.`);
+      return null;
+    }
+    try {
+      const created = await this.app.vault.create(filePath, noteText);
+      return created.path;
+    } catch (e) {
+      console.error("[freeq] clipLink vault.create failed:", e);
+      new import_obsidian5.Notice(`Failed to clip link: ${e.message || String(e)}`);
+      return null;
+    }
+  }
+  slugifyUrl(url) {
+    try {
+      const u = new URL(url);
+      const path = u.pathname.replace(/\/$/, "").split("/").pop() || "";
+      const name = path.replace(/\.[^.]+$/, "").replace(/[^a-zA-Z0-9_-]/g, " ").trim();
+      return name || u.hostname;
+    } catch {
+      return "clipped-link";
+    }
+  }
   async appendToDailyNote(text) {
     const dailyNotes = this.app.internal?.plugins?.plugins?.["daily-notes"];
     if (dailyNotes?.instance) {
-      const file2 = await dailyNotes.instance.openOrCreate((0, import_obsidian4.moment)());
-      if (file2 instanceof import_obsidian4.TFile) {
+      const file2 = await dailyNotes.instance.openOrCreate((0, import_obsidian5.moment)());
+      if (file2 instanceof import_obsidian5.TFile) {
         await this.app.vault.append(file2, text);
         return file2.path;
       }
     }
-    const dateStr = (0, import_obsidian4.moment)().format(this.settings.dailyNoteFormat || "YYYY-MM-DD");
-    const path = (0, import_obsidian4.normalizePath)(`${dateStr}.md`);
+    const dateStr = (0, import_obsidian5.moment)().format(this.settings.dailyNoteFormat || "YYYY-MM-DD");
+    const path = (0, import_obsidian5.normalizePath)(`${dateStr}.md`);
     const file = this.app.vault.getAbstractFileByPath(path);
-    if (file instanceof import_obsidian4.TFile) {
+    if (file instanceof import_obsidian5.TFile) {
       await this.app.vault.append(file, text);
       return file.path;
     }
@@ -1526,17 +1730,17 @@ ${text}`);
     return created.path;
   }
   async appendToFolder(text, channel, msg) {
-    const folderPath = (0, import_obsidian4.normalizePath)(this.settings.clipFolder || "FreeQ Clippings");
+    const folderPath = (0, import_obsidian5.normalizePath)(this.settings.clipFolder || "FreeQ Clippings");
     const folder = this.app.vault.getAbstractFileByPath(folderPath);
     if (!folder) {
       await this.app.vault.createFolder(folderPath);
     }
-    const dateStr = (0, import_obsidian4.moment)(msg.timestamp).format("YYYY-MM-DD");
+    const dateStr = (0, import_obsidian5.moment)(msg.timestamp).format("YYYY-MM-DD");
     const safeChannel = channel.replace(/[^a-zA-Z0-9_-]/g, "_");
     const fileName = `${dateStr} ${safeChannel}.md`;
-    const filePath = (0, import_obsidian4.normalizePath)(`${folderPath}/${fileName}`);
+    const filePath = (0, import_obsidian5.normalizePath)(`${folderPath}/${fileName}`);
     const existing = this.app.vault.getAbstractFileByPath(filePath);
-    if (existing instanceof import_obsidian4.TFile) {
+    if (existing instanceof import_obsidian5.TFile) {
       await this.app.vault.append(existing, text);
       return existing.path;
     }
@@ -1549,7 +1753,7 @@ ${text}`);
 };
 
 // src/auth/oauth.ts
-var import_obsidian5 = require("obsidian");
+var import_obsidian6 = require("obsidian");
 
 // src/auth/local-oauth.ts
 var httpModule = null;
@@ -1684,7 +1888,7 @@ var OAuthHandler = class {
   async initiate(handle, brokerBase, fallbackCallbackUrl) {
     this.cancel();
     try {
-      const check = await (0, import_obsidian5.requestUrl)(`${brokerBase}/health`);
+      const check = await (0, import_obsidian6.requestUrl)(`${brokerBase}/health`);
       if (check.status >= 400) {
         throw new Error("Authentication service unavailable.");
       }
@@ -1717,7 +1921,7 @@ var OAuthHandler = class {
       handle
     )}&return_to=${encodeURIComponent(callbackUrl)}`;
     window.open(authUrl, "_blank");
-    new import_obsidian5.Notice("Continue login in your browser\u2026");
+    new import_obsidian6.Notice("Continue login in your browser\u2026");
     try {
       const session = await waitForSession();
       return session;
@@ -1743,7 +1947,7 @@ var OAuthHandler = class {
       }, 5 * 6e4);
     });
     window.open(authUrl, "_blank");
-    new import_obsidian5.Notice("Continue login in your browser\u2026");
+    new import_obsidian6.Notice("Continue login in your browser\u2026");
     return waitForCallback;
   }
   /** Called by registerObsidianProtocolHandler when obsidian://freeq-chat fires.
@@ -1823,8 +2027,53 @@ var OAuthHandler = class {
   }
 };
 
+// src/pds/blob.ts
+var import_obsidian7 = require("obsidian");
+async function uploadBlobViaFreeQ(opts) {
+  const { serverUrl, did, content, filename, mimeType } = opts;
+  const endpoint = serverUrl.replace(/\/$/, "") + "/api/v1/upload";
+  const boundary = "----FreeQBlobBoundary" + Math.random().toString(36).slice(2);
+  const parts = [];
+  parts.push(
+    `--${boundary}\r
+Content-Disposition: form-data; name="did"\r
+\r
+${did}`
+  );
+  const name = filename || "note.md";
+  const type = mimeType || "text/markdown";
+  const contentBytes = new TextEncoder().encode(content);
+  const contentStr = Array.from(contentBytes).map((b) => String.fromCharCode(b)).join("");
+  parts.push(
+    `--${boundary}\r
+Content-Disposition: form-data; name="file"; filename="${name}"\r
+Content-Type: ${type}\r
+\r
+${contentStr}`
+  );
+  parts.push(`--${boundary}--\r
+`);
+  const body = parts.join("\r\n");
+  const res = await (0, import_obsidian7.requestUrl)({
+    url: endpoint,
+    method: "POST",
+    headers: {
+      "Content-Type": `multipart/form-data; boundary=${boundary}`
+    },
+    body
+  });
+  if (res.status >= 400) {
+    throw new Error(`Upload failed (${res.status}): ${res.text}`);
+  }
+  const data = res.json;
+  if (!data.url) {
+    throw new Error("Upload response missing URL");
+  }
+  return { cid: data.cid, url: data.url };
+}
+
 // src/main.ts
-var FreeQPlugin = class extends import_obsidian6.Plugin {
+var FreeQPlugin = class extends import_obsidian8.Plugin {
   settings;
   client;
   clipper;
@@ -1846,12 +2095,12 @@ var FreeQPlugin = class extends import_obsidian6.Plugin {
           this.settings.oauthSession = session;
           this.settings.did = session.did;
           this.saveSettings();
-          new import_obsidian6.Notice("Authentication completed! Connecting\u2026");
+          new import_obsidian8.Notice("Authentication completed! Connecting\u2026");
           this.connect();
         }
       } catch (error) {
         console.error("[freeq] protocol handler error:", error);
-        new import_obsidian6.Notice("Authentication error.");
+        new import_obsidian8.Notice("Authentication error.");
       }
     });
     this.addRibbonIcon("message-circle", "Open FreeQ Chat", () => {
@@ -1877,7 +2126,7 @@ var FreeQPlugin = class extends import_obsidian6.Plugin {
       name: "Join channel",
       callback: () => {
         if (!this.client.isConnected()) {
-          new import_obsidian6.Notice("Not connected to server.");
+          new import_obsidian8.Notice("Not connected to server.");
           return;
         }
         new JoinChannelModal(this.app, (channel) => {
@@ -1895,10 +2144,15 @@ var FreeQPlugin = class extends import_obsidian6.Plugin {
           if (target) {
             this.client.sendPrivmsg(target, text.trim());
           } else {
-            new import_obsidian6.Notice("No active channel.");
+            new import_obsidian8.Notice("No active channel.");
           }
         }
       }
+    });
+    this.addCommand({
+      id: "freeq-upload-blob",
+      name: "Upload note to PDS blob",
+      callback: () => this.uploadNoteBlob()
     });
     this.addSettingTab(new FreeQSettingTab(this.app, this));
     if (this.settings.oauthSession) {
@@ -1931,14 +2185,14 @@ var FreeQPlugin = class extends import_obsidian6.Plugin {
   registrationTimer = null;
   async connect() {
     if (this.isConnecting) {
-      new import_obsidian6.Notice("Connection already in progress.");
+      new import_obsidian8.Notice("Connection already in progress.");
       return;
     }
     this.isConnecting = true;
     const { serverUrl, nick, oauthSession, did, appPassword, pdsUrl, brokerUrl } = this.settings;
     if (!serverUrl) {
       this.isConnecting = false;
-      new import_obsidian6.Notice("FreeQ server URL is not configured.");
+      new import_obsidian8.Notice("FreeQ server URL is not configured.");
       return;
     }
     let token = "";
@@ -1960,16 +2214,40 @@ var FreeQPlugin = class extends import_obsidian6.Plugin {
         method = "web-token";
         effectiveDid = refreshed.did;
       } catch (e) {
-        this.isConnecting = false;
         console.error("[freeq] broker refresh failed:", e);
-        if (e?.message?.includes("expired")) {
+        const handle = oauthSession?.handle;
+        if (handle) {
+          try {
+            new import_obsidian8.Notice("Session expired \u2014 re-authenticating\u2026");
+            await this.initiateOAuth(handle);
+            const refreshed = await this.refreshBrokerToken(this.settings.oauthSession.brokerToken);
+            this.settings.oauthSession = {
+              ...this.settings.oauthSession,
+              webToken: refreshed.token,
+              nick: refreshed.nick,
+              did: refreshed.did,
+              handle: refreshed.handle,
+              createdAt: Date.now()
+            };
+            await this.saveSettings();
+            token = refreshed.token;
+            method = "web-token";
+            effectiveDid = refreshed.did;
+          } catch (reauthErr) {
+            this.isConnecting = false;
+            console.error("[freeq] re-auth failed:", reauthErr);
+            this.settings.oauthSession = void 0;
+            await this.saveSettings();
+            new import_obsidian8.Notice("Re-authentication failed. Please log in again.");
+            return;
+          }
+        } else {
+          this.isConnecting = false;
           this.settings.oauthSession = void 0;
           await this.saveSettings();
-          new import_obsidian6.Notice("Session expired. Please log in again.");
-        } else {
-          new import_obsidian6.Notice("Failed to refresh session \u2014 try reconnecting.");
+          new import_obsidian8.Notice("Session expired. Please log in again.");
+          return;
         }
-        return;
       }
     } else if (oauthSession) {
       token = oauthSession.webToken;
@@ -1980,7 +2258,7 @@ var FreeQPlugin = class extends import_obsidian6.Plugin {
         const session = await this.createPdsSession(did, appPassword, pdsUrl);
         if (!session) {
           this.isConnecting = false;
-          new import_obsidian6.Notice("Failed to authenticate with PDS. Check your credentials.");
+          new import_obsidian8.Notice("Failed to authenticate with PDS. Check your credentials.");
           return;
         }
         token = session.accessJwt;
@@ -1988,13 +2266,13 @@ var FreeQPlugin = class extends import_obsidian6.Plugin {
       } catch (e) {
         this.isConnecting = false;
         console.error("[freeq] PDS auth error:", e);
-        new import_obsidian6.Notice("PDS authentication failed.");
+        new import_obsidian8.Notice("PDS authentication failed.");
         return;
       }
     }
     const desiredNick = nick || oauthSession?.nick || did?.split(":").pop()?.slice(0, 15) || "guest";
     if (!token) {
-      new import_obsidian6.Notice(
+      new import_obsidian8.Notice(
         "Connecting as guest \u2014 configure OAuth or App Password in settings to authenticate."
       );
     }
@@ -2026,7 +2304,7 @@ var FreeQPlugin = class extends import_obsidian6.Plugin {
           this.registrationTimer = setTimeout(() => {
             if (!this.client.isConnected()) {
               console.log("[freeq] Registration timeout \u2014 001 never received");
-              new import_obsidian6.Notice("Server connected but never sent registration confirmation. Try reconnecting.");
+              new import_obsidian8.Notice("Server connected but never sent registration confirmation. Try reconnecting.");
             }
           }, 15e3);
         } else if (ev.state === "disconnected") {
@@ -2040,7 +2318,7 @@ var FreeQPlugin = class extends import_obsidian6.Plugin {
     });
     console.log("[freeq] connecting to", serverUrl, "as", desiredNick, "method", method, "did", effectiveDid);
     this.client.connect(serverUrl, desiredNick, token, effectiveDid, method);
-    new import_obsidian6.Notice("Connecting to FreeQ\u2026");
+    new import_obsidian8.Notice("Connecting to FreeQ\u2026");
   }
   disconnect() {
     this.isConnecting = false;
@@ -2049,7 +2327,44 @@ var FreeQPlugin = class extends import_obsidian6.Plugin {
       this.registrationTimer = null;
     }
     this.client.disconnect();
-    new import_obsidian6.Notice("Disconnected from FreeQ.");
+    new import_obsidian8.Notice("Disconnected from FreeQ.");
+  }
+  // ── PDS Blob Upload ──
+  async uploadNoteBlob() {
+    const file = this.app.workspace.getActiveFile();
+    if (!file) {
+      new import_obsidian8.Notice("No active note.");
+      return;
+    }
+    if (!this.client.isConnected()) {
+      new import_obsidian8.Notice("Not connected to FreeQ server. Connect first.");
+      return;
+    }
+    const did = this.settings.oauthSession?.did || this.settings.did;
+    if (!did) {
+      new import_obsidian8.Notice("Not authenticated. Log in via OAuth first.");
+      return;
+    }
+    const wsUrl = this.settings.serverUrl;
+    if (!wsUrl) {
+      new import_obsidian8.Notice("FreeQ server URL not configured.");
+      return;
+    }
+    const serverUrl = wsUrl.replace(/^wss:\/\//, "https://").replace(/^ws:\/\//, "http://").replace(/\/irc$/, "");
+    const content = await this.app.vault.read(file);
+    try {
+      const result = await uploadBlobViaFreeQ({
+        serverUrl,
+        did,
+        content,
+        filename: file.name
+      });
+      await navigator.clipboard.writeText(result.url);
+      new import_obsidian8.Notice(`Blob URL copied to clipboard`);
+    } catch (e) {
+      console.error("[freeq] blob upload failed:", e);
+      new import_obsidian8.Notice(`Upload failed: ${e.message || String(e)}`);
+    }
   }
   async activateView() {
     const { workspace } = this.app;
@@ -2069,7 +2384,7 @@ var FreeQPlugin = class extends import_obsidian6.Plugin {
   async refreshBrokerToken(brokerToken) {
     const brokerBody = JSON.stringify({ broker_token: brokerToken });
     const url = this.settings.brokerUrl.replace(/\/$/, "") + "/session";
-    const res = await (0, import_obsidian6.requestUrl)({
+    const res = await (0, import_obsidian8.requestUrl)({
       url,
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -2102,7 +2417,7 @@ var FreeQPlugin = class extends import_obsidian6.Plugin {
     }
     const url = endpoint.replace(/\/$/, "") + "/xrpc/com.atproto.server.createSession";
     try {
-      const resp = await (0, import_obsidian6.requestUrl)({
+      const resp = await (0, import_obsidian8.requestUrl)({
         url,
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -2122,7 +2437,7 @@ var FreeQPlugin = class extends import_obsidian6.Plugin {
   }
   async resolveHandle(handle) {
     try {
-      const resp = await (0, import_obsidian6.requestUrl)(
+      const resp = await (0, import_obsidian8.requestUrl)(
         `https://plc.directory/resolveHandle?handle=${encodeURIComponent(handle)}`
       );
       if (resp.status >= 400) return null;
@@ -2135,7 +2450,7 @@ var FreeQPlugin = class extends import_obsidian6.Plugin {
     try {
       const url = did.startsWith("did:plc:") ? `https://plc.directory/${did}` : did.startsWith("did:web:") ? `https://${did.slice(8)}/.well-known/did.json` : null;
       if (!url) return null;
-      const resp = await (0, import_obsidian6.requestUrl)(url);
+      const resp = await (0, import_obsidian8.requestUrl)(url);
       if (resp.status >= 400) return null;
       return resp.json;
     } catch {

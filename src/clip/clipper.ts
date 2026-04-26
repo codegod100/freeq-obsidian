@@ -1,8 +1,16 @@
-import { App, TFile, TFolder, moment, normalizePath } from "obsidian";
+import { App, Notice, TFile, TFolder, moment, normalizePath, requestUrl } from "obsidian";
 import type { FreeQSettings } from "../settings";
 import type { ChatMessage } from "../irc/client";
+import { ClipLinkModal } from "../ui/ClipLinkModal";
 
 export interface ClipContext {
+  channel: string;
+  msg: ChatMessage;
+}
+
+export interface LinkClipContext {
+  url: string;
+  text: string;
   channel: string;
   msg: ChatMessage;
 }
@@ -37,6 +45,118 @@ export class Clipper {
     } catch (e) {
       console.error("[freeq] clip failed:", e);
       return null;
+    }
+  }
+
+  async clipLink(context: LinkClipContext): Promise<string | null> {
+    const { url, text, channel, msg } = context;
+
+    // Prompt for note name via modal
+    const noteName = await new Promise<string | null>((resolve) => {
+      const defaultName = text || this.slugifyUrl(url);
+      let submitted = false;
+      const modal = new ClipLinkModal(this.app, defaultName, (name) => {
+        submitted = true;
+        resolve(name);
+      });
+      const origOnClose = modal.onClose.bind(modal);
+      modal.onClose = () => {
+        origOnClose();
+        if (!submitted) resolve(null);
+      };
+      modal.open();
+    });
+    if (!noteName) return null;
+
+    // Fetch the page content
+    let body = "";
+    try {
+      const res = await requestUrl({ url, method: "GET" });
+      body = res.text;
+    } catch (e) {
+      // If fetch fails, just save the link
+      console.warn("[freeq] clipLink fetch failed:", url, e);
+      body = "";
+    }
+
+    // Build note content
+    const timestamp = moment(msg.timestamp).format("YYYY-MM-DD HH:mm:ss");
+    const frontmatter = [
+      "---",
+      `source: ${url}`,
+      `clipped: ${moment().format("YYYY-MM-DDTHH:mm:ssZ")}`,
+      `from: ${msg.from}`,
+      `channel: ${channel}`,
+      "---",
+      "",
+    ].join("\n");
+
+    const header = `# ${noteName}\n\n`;
+    const linkLine = `> [${text}](${url}) — @${msg.from} in ${channel} at ${timestamp}\n\n`;
+
+    // Try to extract readable content from HTML, otherwise use raw text
+    let content = "";
+    if (body.startsWith("<") || body.includes("<html")) {
+      // Extract <title>
+      const titleMatch = body.match(/<title[^>]*>([^<]+)<\/title>/i);
+      const title = titleMatch ? titleMatch[1].trim() : "";
+
+      // Strip tags for a rough text extraction
+      const stripped = body
+        .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, "")
+        .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, "")
+        .replace(/<[^>]+>/g, " ")
+        .replace(/&amp;/g, "&")
+        .replace(/&lt;/g, "<")
+        .replace(/&gt;/g, ">")
+        .replace(/&quot;/g, '"')
+        .replace(/&#39;/g, "'")
+        .replace(/&nbsp;/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+
+      content = title ? `## ${title}\n\n${stripped.slice(0, 10000)}` : stripped.slice(0, 10000);
+    } else {
+      content = body.slice(0, 10000);
+    }
+
+    const noteText = frontmatter + header + linkLine + content + "\n";
+
+    // Save as a new note
+    const folderPath = normalizePath(this.settings.clipFolder || "FreeQ Clippings");
+    const folder = this.app.vault.getAbstractFileByPath(folderPath);
+    if (!folder) {
+      await this.app.vault.createFolder(folderPath);
+    }
+
+    const fileName = noteName.endsWith(".md") ? noteName : `${noteName}.md`;
+    const filePath = normalizePath(`${folderPath}/${fileName}`);
+
+    // Don't overwrite existing notes
+    const existing = this.app.vault.getAbstractFileByPath(filePath);
+    if (existing) {
+      new Notice(`Note "${fileName}" already exists.`);
+      return null;
+    }
+
+    try {
+      const created = await this.app.vault.create(filePath, noteText);
+      return created.path;
+    } catch (e) {
+      console.error("[freeq] clipLink vault.create failed:", e);
+      new Notice(`Failed to clip link: ${e.message || String(e)}`);
+      return null;
+    }
+  }
+
+  private slugifyUrl(url: string): string {
+    try {
+      const u = new URL(url);
+      const path = u.pathname.replace(/\/$/, "").split("/").pop() || "";
+      const name = path.replace(/\.[^.]+$/, "").replace(/[^a-zA-Z0-9_-]/g, " ").trim();
+      return name || u.hostname;
+    } catch {
+      return "clipped-link";
     }
   }
 

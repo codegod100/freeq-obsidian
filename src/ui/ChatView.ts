@@ -434,7 +434,7 @@ export class ChatView extends ItemView {
     if (msg.isAction && msg.from) {
       body.setText(`* ${msg.from} ${msg.text}`);
     } else {
-      body.setText(msg.text);
+      this.renderMessageBody(body, msg.text, msg);
     }
 
     // Context menu to clip / reply
@@ -463,6 +463,85 @@ export class ChatView extends ItemView {
   private truncateText(text: string, max: number): string {
     if (text.length <= max) return text;
     return text.slice(0, max - 1) + "…";
+  }
+
+  // ── Linkify ──
+
+  private renderMessageBody(el: HTMLElement, text: string, msg: ChatMessage) {
+    // Match markdown links first, then bare URLs
+    const mdLinkRe = /\[([^\]]+)\]\(([^)]+)\)/g;
+    const urlRe = /https?:\/\/[^\s)>,\]]+/g;
+
+    // Collect all matches with positions
+    type LinkMatch = { start: number; end: number; text: string; url: string; isMarkdown: boolean };
+    const matches: LinkMatch[] = [];
+
+    let m: RegExpExecArray | null;
+    while ((m = mdLinkRe.exec(text)) !== null) {
+      matches.push({ start: m.index, end: m.index + m[0].length, text: m[1], url: m[2], isMarkdown: true });
+    }
+    while ((m = urlRe.exec(text)) !== null) {
+      // Skip if inside an already-matched markdown link
+      const inside = matches.some((lm) => m!.index >= lm.start && m!.index < lm.end);
+      if (!inside) {
+        matches.push({ start: m.index, end: m.index + m[0].length, text: m[0], url: m[0], isMarkdown: false });
+      }
+    }
+
+    // Sort by position
+    matches.sort((a, b) => a.start - b.start);
+
+    if (matches.length === 0) {
+      el.setText(text);
+      return;
+    }
+
+    let lastEnd = 0;
+    for (const lm of matches) {
+      // Text before this match
+      if (lm.start > lastEnd) {
+        el.appendChild(document.createTextNode(text.slice(lastEnd, lm.start)));
+      }
+
+      // The link
+      const a = el.createEl("a", {
+        cls: "freeq-link",
+        text: lm.text,
+        attr: { href: lm.url },
+      });
+      a.addEventListener("click", (e) => {
+        e.preventDefault();
+        (window as any).require("electron").shell.openExternal(lm.url);
+      });
+
+      // Clip button — only for likely-text URLs (skip images, video, audio, archives)
+      const binaryExts = /\.(png|jpe?g|gif|webp|svg|ico|bmp|avif|mp4|webm|mkv|avi|mov|mp3|ogg|opus|flac|wav|m4[ap]|zip|gz|tar|rar|7z|bz2|xz|pdf|docx?|xlsx?|pptx?|od[st]|dmg|iso|exe|msi|deb|rpm)$/i;
+      if (!binaryExts.test(lm.url)) {
+        const clipBtn = el.createEl("button", {
+          cls: "freeq-clip-link-btn",
+          attr: { title: "Clip link to vault" },
+        });
+        clipBtn.setText("📎");
+        clipBtn.addEventListener("click", async (e) => {
+          e.stopPropagation();
+          e.preventDefault();
+          const channel = this.plugin.client.activeChannel;
+          const path = await this.plugin.clipper.clipLink({ url: lm.url, text: lm.text, channel, msg });
+          if (path) {
+            new Notice(`Clipped to ${path}`);
+          } else {
+            new Notice("Failed to clip link.");
+          }
+        });
+      }
+
+      lastEnd = lm.end;
+    }
+
+    // Remaining text
+    if (lastEnd < text.length) {
+      el.appendChild(document.createTextNode(text.slice(lastEnd)));
+    }
   }
 
   private showMessageMenu(
