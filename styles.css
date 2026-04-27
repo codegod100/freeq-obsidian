@@ -184,7 +184,7 @@
   text-decoration: underline;
 }
 
-.freeq-clip-link-btn {
+.freeq-copy-link-btn {
   background: none;
   border: none;
   cursor: pointer;
@@ -196,11 +196,11 @@
   transition: opacity 0.15s;
 }
 
-.freeq-message:hover .freeq-clip-link-btn {
+.freeq-message:hover .freeq-copy-link-btn {
   opacity: 0.6;
 }
 
-.freeq-clip-link-btn:hover {
+.freeq-copy-link-btn:hover {
   opacity: 1 !important;
 }
 

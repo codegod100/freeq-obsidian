@@ -15,6 +15,8 @@ export class ChatView extends ItemView {
   private memberListEl!: HTMLElement;
   private toggleMembersBtn!: HTMLElement;
   private showMembers = false;
+  private showChannelList = true;
+  private statusBase = "Disconnected";
   private replyBannerEl!: HTMLElement;
   private replyingTo: { id: string; from: string; preview: string } | null = null;
 
@@ -68,12 +70,21 @@ export class ChatView extends ItemView {
     // Header
     const header = this.container.createDiv({ cls: "freeq-header" });
     this.statusEl = header.createDiv({ cls: "freeq-status" });
-    this.statusEl.setText("Disconnected");
+    this.updateHeader();
 
     const headerActions = header.createDiv({ cls: "freeq-header-actions" });
-    this.toggleMembersBtn = headerActions.createEl("button", {
-      text: "Members",
+
+    const toggleChannelsBtn = headerActions.createEl("button", {
+      text: "☰",
       cls: "freeq-btn-small",
+      attr: { title: "Toggle channel list" },
+    });
+    toggleChannelsBtn.addEventListener("click", () => this.toggleChannelList());
+
+    this.toggleMembersBtn = headerActions.createEl("button", {
+      text: "👥",
+      cls: "freeq-btn-small",
+      attr: { title: "Toggle member list" },
     });
     this.toggleMembersBtn.addEventListener("click", () => this.toggleMembers());
 
@@ -124,6 +135,9 @@ export class ChatView extends ItemView {
       if (e.key === "Escape") {
         this.cancelReply();
       }
+    });
+    this.inputEl.addEventListener("paste", (e) => {
+      void this.handlePaste(e);
     });
 
     // Member list
@@ -203,13 +217,20 @@ export class ChatView extends ItemView {
 
   // ── UI Actions ──
 
+  private updateHeader() {
+    const channel = this.plugin.client.activeChannel?.trim();
+    const channelText = channel ? ` · ${channel}` : "";
+    this.statusEl.setText(`${this.statusBase}${channelText}`);
+  }
+
   private updateStatus(state: string) {
     const map: Record<string, string> = {
       disconnected: "Disconnected",
       connecting: "Connecting…",
       connected: "Authenticating…",
     };
-    this.statusEl.setText(map[state] || state);
+    this.statusBase = map[state] || state;
+    this.updateHeader();
     if (state === "connected" || state === "registered") {
       this.statusEl.addClass("freeq-status-connected");
       // Enable input so user can type commands even before registration
@@ -220,10 +241,10 @@ export class ChatView extends ItemView {
   }
 
   private onRegistered(nick: string) {
-
     this.inputEl.disabled = false;
     this.inputEl.placeholder = `Message as ${nick}…`;
-    this.statusEl.setText(`Registered as ${nick}`);
+    this.statusBase = `Registered as ${nick}`;
+    this.updateHeader();
     this.renderChannelList();
     this.renderMessages();
   }
@@ -233,7 +254,8 @@ export class ChatView extends ItemView {
 
     this.inputEl.disabled = false;
     this.inputEl.placeholder = `Message as ${nick}…`;
-    this.statusEl.setText(`Registered as ${nick}`);
+    this.statusBase = `Registered as ${nick}`;
+    this.updateHeader();
     this.renderChannelList();
     this.renderMessages();
   }
@@ -256,6 +278,64 @@ export class ChatView extends ItemView {
 
     this.plugin.client.sendPrivmsg(target, text, this.replyingTo?.id);
     this.cancelReply();
+  }
+
+  private async handlePaste(e: ClipboardEvent) {
+    const file = this.getPastedImage(e);
+    if (!file) return;
+
+    e.preventDefault();
+    e.stopPropagation();
+
+    console.warn("[freeq] paste image", {
+      name: file.name,
+      type: file.type,
+      size: file.size,
+      channel: this.plugin.client.activeChannel,
+    });
+
+    try {
+      const url = await this.plugin.uploadBlobToPds(file, file.name || "paste.png");
+      if (!url) return;
+
+      this.insertTextAtCursor(url);
+      new Notice("Pasted image uploaded.");
+    } catch (err: any) {
+      new Notice(`Image upload failed: ${err?.message || String(err)}`);
+    }
+  }
+
+  private getPastedImage(e: ClipboardEvent): File | null {
+    const items = e.clipboardData?.items;
+    if (items) {
+      for (const item of items) {
+        if (item.kind !== "file") continue;
+        const file = item.getAsFile();
+        if (file && file.type.startsWith("image/")) return file;
+      }
+    }
+
+    const electron = (window as any).require?.("electron");
+    const nativeImage = electron?.clipboard?.readImage?.();
+    if (nativeImage && !nativeImage.isEmpty?.()) {
+      const png = nativeImage.toPNG?.();
+      if (png?.length) {
+        return new File([png], `paste-${Date.now()}.png`, { type: "image/png" });
+      }
+    }
+
+    return null;
+  }
+
+  private insertTextAtCursor(text: string) {
+    const el = this.inputEl;
+    const start = el.selectionStart ?? el.value.length;
+    const end = el.selectionEnd ?? el.value.length;
+    const value = el.value;
+    el.value = value.slice(0, start) + text + value.slice(end);
+    const next = start + text.length;
+    el.focus();
+    el.setSelectionRange(next, next);
   }
 
   private handleCommand(cmd: string) {
@@ -320,6 +400,11 @@ export class ChatView extends ItemView {
     }
   }
 
+  private toggleChannelList() {
+    this.showChannelList = !this.showChannelList;
+    this.channelListEl.style.display = this.showChannelList ? "" : "none";
+  }
+
   // ── Rendering ──
 
   private isActiveChannel(name: string): boolean {
@@ -328,6 +413,7 @@ export class ChatView extends ItemView {
 
   private renderChannelList() {
 
+    this.updateHeader();
     this.channelListEl.empty();
     const channels = Array.from(this.plugin.client.channels.values());
     if (!channels.length) {
@@ -514,26 +600,16 @@ export class ChatView extends ItemView {
         (window as any).require("electron").shell.openExternal(lm.url);
       });
 
-      // Clip button — only for likely-text URLs (skip images, video, audio, archives)
-      const binaryExts = /\.(png|jpe?g|gif|webp|svg|ico|bmp|avif|mp4|webm|mkv|avi|mov|mp3|ogg|opus|flac|wav|m4[ap]|zip|gz|tar|rar|7z|bz2|xz|pdf|docx?|xlsx?|pptx?|od[st]|dmg|iso|exe|msi|deb|rpm)$/i;
-      if (!binaryExts.test(lm.url)) {
-        const clipBtn = el.createEl("button", {
-          cls: "freeq-clip-link-btn",
-          attr: { title: "Clip link to vault" },
-        });
-        clipBtn.setText("📎");
-        clipBtn.addEventListener("click", async (e) => {
-          e.stopPropagation();
-          e.preventDefault();
-          const channel = this.plugin.client.activeChannel;
-          const path = await this.plugin.clipper.clipLink({ url: lm.url, text: lm.text, channel, msg });
-          if (path) {
-            new Notice(`Clipped to ${path}`);
-          } else {
-            new Notice("Failed to clip link.");
-          }
-        });
-      }
+      const copyBtn = el.createEl("button", {
+        cls: "freeq-copy-link-btn",
+        attr: { title: "Copy link" },
+      });
+      copyBtn.setText("📋");
+      copyBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        (window as any).require("electron").clipboard.writeText(lm.url);
+      });
 
       lastEnd = lm.end;
     }

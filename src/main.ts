@@ -10,7 +10,7 @@ import { ChatView, VIEW_TYPE_FREEQ } from "./ui/ChatView";
 import { Clipper } from "./clip/clipper";
 import { OAuthHandler, type OAuthSession } from "./auth/oauth";
 import { JoinChannelModal } from "./ui/JoinChannelModal";
-import { uploadBlobViaFreeQ } from "./pds/blob";
+import { BlobUploadError, uploadBlobViaFreeQ } from "./pds/blob";
 
 export default class FreeQPlugin extends Plugin {
   settings: FreeQSettings;
@@ -319,42 +319,100 @@ export default class FreeQPlugin extends Plugin {
       return;
     }
 
+    try {
+      const result = await this.uploadBlobToPds(
+        new Blob([await this.app.vault.read(file)], { type: "text/markdown" }),
+        file.name
+      );
+      if (!result) return;
+      await navigator.clipboard.writeText(result);
+      new Notice(`Blob URL copied to clipboard`);
+    } catch (e: any) {
+      console.error("[freeq] blob upload failed:", e);
+      new Notice(`Upload failed: ${e.message || String(e)}`);
+    }
+  }
+
+  async uploadBlobToPds(blob: Blob, filename?: string): Promise<string | null> {
     // Need active IRC connection for the server to recognize our session
     if (!this.client.isConnected()) {
       new Notice("Not connected to FreeQ server. Connect first.");
-      return;
+      return null;
     }
 
     // Need OAuth session for DID and to have pushed PDS creds to server
     const did = this.settings.oauthSession?.did || this.settings.did;
     if (!did) {
       new Notice("Not authenticated. Log in via OAuth first.");
-      return;
+      return null;
     }
 
     // Server URL for the upload endpoint (convert wss:// to https://)
     const wsUrl = this.settings.serverUrl;
     if (!wsUrl) {
       new Notice("FreeQ server URL not configured.");
-      return;
+      return null;
     }
     const serverUrl = wsUrl.replace(/^wss:\/\//, "https://").replace(/^ws:\/\//, "http://").replace(/\/irc$/, "");
 
-    const content = await this.app.vault.read(file);
+    console.warn("[freeq] uploading blob", {
+      filename: filename || "paste.png",
+      mimeType: blob.type || "application/octet-stream",
+      hasAuthToken: !!this.settings.oauthSession?.webToken,
+      serverUrl,
+      did,
+    });
 
     try {
       const result = await uploadBlobViaFreeQ({
         serverUrl,
         did,
-        content,
-        filename: file.name,
+        authToken: this.settings.oauthSession?.webToken,
+        content: new Uint8Array(await blob.arrayBuffer()),
+        filename: filename || "paste.png",
+        mimeType: blob.type || "application/octet-stream",
       });
-      await navigator.clipboard.writeText(result.url);
-      new Notice(`Blob URL copied to clipboard`);
-    } catch (e: any) {
-      console.error("[freeq] blob upload failed:", e);
-      new Notice(`Upload failed: ${e.message || String(e)}`);
+      return result.url;
+    } catch (err) {
+      if (err instanceof BlobUploadError) {
+        const body = typeof err.body === "string" ? null : err.body;
+        const stepUpUrl = body?.error === "step_up_required" ? body.step_up_url : null;
+        if (stepUpUrl) {
+          const resolvedStepUpUrl = this.resolveUrl(stepUpUrl, serverUrl);
+          const stepUp = new URL(resolvedStepUpUrl);
+          if (!stepUp.searchParams.has("did")) {
+            stepUp.searchParams.set("did", did);
+          }
+          console.warn("[freeq] upload step-up required", {
+            did,
+            stepUpUrl: resolvedStepUpUrl,
+            finalStepUpUrl: stepUp.toString(),
+            message: body?.message,
+          });
+          this.openExternalUrl(stepUp.toString());
+          new Notice("Complete the upload approval in your browser, then paste again.");
+          return null;
+        }
+      }
+      throw err;
     }
+  }
+
+  private resolveUrl(url: string, baseUrl: string): string {
+    try {
+      return new URL(url, baseUrl).toString();
+    } catch {
+      return url;
+    }
+  }
+
+  private openExternalUrl(url: string) {
+    const electron = (window as any).require?.("electron");
+    if (electron?.shell?.openExternal) {
+      electron.shell.openExternal(url);
+      return;
+    }
+    window.open(url, "_blank");
   }
 
   async activateView() {

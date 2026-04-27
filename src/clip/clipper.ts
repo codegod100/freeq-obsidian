@@ -51,13 +51,13 @@ export class Clipper {
   async clipLink(context: LinkClipContext): Promise<string | null> {
     const { url, text, channel, msg } = context;
 
-    // Prompt for note name via modal
-    const noteName = await new Promise<string | null>((resolve) => {
+    // Prompt for target note via fuzzy picker
+    const notePath = await new Promise<string | null>((resolve) => {
       const defaultName = text || this.slugifyUrl(url);
       let submitted = false;
-      const modal = new ClipLinkModal(this.app, defaultName, (name) => {
+      const modal = new ClipLinkModal(this.app, defaultName, (path) => {
         submitted = true;
-        resolve(name);
+        resolve(path);
       });
       const origOnClose = modal.onClose.bind(modal);
       modal.onClose = () => {
@@ -66,7 +66,7 @@ export class Clipper {
       };
       modal.open();
     });
-    if (!noteName) return null;
+    if (!notePath) return null;
 
     // Fetch the page content
     let body = "";
@@ -91,17 +91,13 @@ export class Clipper {
       "",
     ].join("\n");
 
-    const header = `# ${noteName}\n\n`;
     const linkLine = `> [${text}](${url}) — @${msg.from} in ${channel} at ${timestamp}\n\n`;
 
     // Try to extract readable content from HTML, otherwise use raw text
     let content = "";
     if (body.startsWith("<") || body.includes("<html")) {
-      // Extract <title>
       const titleMatch = body.match(/<title[^>]*>([^<]+)<\/title>/i);
       const title = titleMatch ? titleMatch[1].trim() : "";
-
-      // Strip tags for a rough text extraction
       const stripped = body
         .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, "")
         .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, "")
@@ -114,33 +110,44 @@ export class Clipper {
         .replace(/&nbsp;/g, " ")
         .replace(/\s+/g, " ")
         .trim();
-
       content = title ? `## ${title}\n\n${stripped.slice(0, 10000)}` : stripped.slice(0, 10000);
     } else {
       content = body.slice(0, 10000);
     }
 
-    const noteText = frontmatter + header + linkLine + content + "\n";
+    const targetPath = normalizePath(
+      notePath.includes("/") ? notePath : `${this.settings.clipFolder || "FreeQ Clippings"}/${notePath}`
+    );
+    const noteTitle = targetPath.replace(/\.md$/, "").split("/").pop() || notePath;
+    const noteText = frontmatter + `# ${noteTitle}\n\n` + linkLine + content + "\n";
 
-    // Save as a new note
-    const folderPath = normalizePath(this.settings.clipFolder || "FreeQ Clippings");
+    // Check if the note already exists
+    const existing = this.app.vault.getAbstractFileByPath(targetPath);
+    if (existing instanceof TFile) {
+      const appendText = "\n" + linkLine + content + "\n";
+      try {
+        await this.app.vault.append(existing, appendText);
+        return existing.path;
+      } catch (e) {
+        console.error("[freeq] clipLink vault.append failed:", e);
+        new Notice(`Failed to append to note: ${e.message || String(e)}`);
+        return null;
+      }
+    }
+
+    // Create new note — ensure parent folder exists
+    const folderPath = targetPath.includes("/")
+      ? targetPath.substring(0, targetPath.lastIndexOf("/"))
+      : (this.settings.clipFolder || "FreeQ Clippings");
     const folder = this.app.vault.getAbstractFileByPath(folderPath);
     if (!folder) {
       await this.app.vault.createFolder(folderPath);
     }
 
-    const fileName = noteName.endsWith(".md") ? noteName : `${noteName}.md`;
-    const filePath = normalizePath(`${folderPath}/${fileName}`);
-
-    // Don't overwrite existing notes
-    const existing = this.app.vault.getAbstractFileByPath(filePath);
-    if (existing) {
-      new Notice(`Note "${fileName}" already exists.`);
-      return null;
-    }
+    const filePath = targetPath;
 
     try {
-      const created = await this.app.vault.create(filePath, noteText);
+      const created = await this.app.vault.create(filePath, noteText.replace(/^# .+\n\n/, `# ${noteTitle}\n\n`));
       return created.path;
     } catch (e) {
       console.error("[freeq] clipLink vault.create failed:", e);
