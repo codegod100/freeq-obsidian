@@ -86,7 +86,17 @@ export class IRCClient {
 
   // Channels
   channels = new Map<string, ChatChannel>();
-  activeChannel = "";
+  private _activeChannel = "";
+  onActiveChannelChange: ((channel: string) => void) | null = null;
+  get activeChannel(): string {
+    return this._activeChannel;
+  }
+  set activeChannel(channel: string) {
+    const next = channel.trim();
+    if (next === this._activeChannel) return;
+    this._activeChannel = next;
+    this.onActiveChannelChange?.(next);
+  }
   serverMessages: ChatMessage[] = [];
 
   // Batches (CHATHISTORY)
@@ -161,6 +171,29 @@ export class IRCClient {
     return () => {
       this.listeners = this.listeners.filter((l) => l !== fn);
     };
+  }
+
+  /** Returns a promise that resolves when the server sends 001 (registered).
+   *  Rejects after timeoutMs if registration never completes. */
+  waitForRegistration(timeoutMs = 30_000): Promise<string> {
+    if (this.registered) return Promise.resolve(this.nick);
+    return new Promise<string>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        remove();
+        reject(new Error("Registration timed out"));
+      }, timeoutMs);
+      const remove = this.addListener((ev) => {
+        if (ev.type === "registered") {
+          clearTimeout(timer);
+          remove();
+          resolve(ev.nick);
+        } else if (ev.type === "state" && ev.state === "disconnected") {
+          clearTimeout(timer);
+          remove();
+          reject(new Error("Disconnected during registration"));
+        }
+      });
+    });
   }
 
   private emit(ev: ClientEvent) {

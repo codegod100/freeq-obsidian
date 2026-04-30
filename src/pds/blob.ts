@@ -56,12 +56,11 @@ function concatBytes(...chunks: Uint8Array[]): Uint8Array {
 export async function uploadBlobViaFreeQ(opts: {
 	serverUrl: string;
 	did: string;
-	authToken?: string;
 	content: UploadContent;
 	filename?: string;
 	mimeType?: string;
 }): Promise<BlobResult> {
-	const { serverUrl, did, authToken, content, filename, mimeType } = opts;
+	const { serverUrl, did, content, filename, mimeType } = opts;
 	const endpoint = serverUrl.replace(/\/$/, "") + "/api/v1/upload";
 
 	const boundary = "----FreeQBlobBoundary" + Math.random().toString(36).slice(2);
@@ -84,7 +83,6 @@ export async function uploadBlobViaFreeQ(opts: {
 		method: "POST",
 		contentType: `multipart/form-data; boundary=${boundary}`,
 		throw: false,
-		headers: authToken ? { Authorization: `Bearer ${authToken}` } : undefined,
 		body: body.buffer.slice(body.byteOffset, body.byteOffset + body.byteLength) as ArrayBuffer,
 	});
 
@@ -99,7 +97,6 @@ export async function uploadBlobViaFreeQ(opts: {
 			status: res.status,
 			filename: name,
 			mimeType: type,
-			authToken: !!authToken,
 			response: res.text.slice(0, 500),
 			headers: res.headers,
 		});

@@ -7,9 +7,11 @@ export interface FreeQSettings {
   callbackUrl: string;
   nick: string;
   did: string;
+  lastHandle: string;
   appPassword: string;
   pdsUrl: string;
   autoJoinChannels: string;
+  lastChannel: string;
   clipFolder: string;
   clipTemplate: string;
   useDailyNote: boolean;
@@ -31,9 +33,11 @@ export const DEFAULT_SETTINGS: FreeQSettings = {
   callbackUrl: "https://codegod100.github.io/freeq-obsidian/oauth-callback.html",
   nick: "",
   did: "",
+  lastHandle: "",
   appPassword: "",
   pdsUrl: "https://bsky.social",
   autoJoinChannels: "#general",
+  lastChannel: "",
   clipFolder: "FreeQ Clippings",
   clipTemplate:
     `> {{text}}

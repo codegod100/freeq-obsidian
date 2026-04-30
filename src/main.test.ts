@@ -37,7 +37,7 @@ describe("FreeQPlugin connect flow", () => {
         brokerToken: "expired",
         webToken: "fallback-token",
         did: "did:plc:abc",
-        handle: "test.bsky.social",
+        handle: "",
         nick: "testnick",
         pdsUrl: "https://bsky.social",
         createdAt: Date.now(),
@@ -75,5 +75,20 @@ describe("FreeQPlugin connect flow", () => {
     await vi.waitFor(() => expect(plugin.client.isConnected()).toBe(true));
     // client.join() sets activeChannel to the last joined channel
     expect(plugin.client.activeChannel).toBe("#random");
+  });
+
+  it("restores the last channel when opening a popout", async () => {
+    const plugin = createTestPlugin({ lastChannel: "#random" });
+    const setViewState = vi.fn(async () => {});
+    const leaf = { setViewState } as any;
+    plugin.app.workspace.openPopoutLeaf = vi.fn(() => leaf);
+    plugin.app.workspace.revealLeaf = vi.fn();
+
+    await plugin.openChatInPopout();
+
+    expect(plugin.client.activeChannel).toBe("#random");
+    expect(plugin.settings.lastChannel).toBe("#random");
+    expect(plugin.app.workspace.openPopoutLeaf).toHaveBeenCalled();
+    expect(setViewState).toHaveBeenCalledWith({ type: "freeq-chat", active: true });
   });
 });

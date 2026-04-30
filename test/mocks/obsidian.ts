@@ -201,6 +201,21 @@ export class PluginSettingTab {
   display() {}
 }
 
+export class FuzzySuggestModal<T> extends Modal {
+  items: T[] = [];
+  constructor(app: any) {
+    super(app);
+  }
+  getItems(): T[] {
+    return this.items;
+  }
+  getItemText(item: T): string {
+    return String(item);
+  }
+  onChooseItem(_item: T, _evt: MouseEvent | KeyboardEvent) {}
+  open = vi.fn();
+}
+
 export function requestUrl(url: string | any) {
   if (typeof url === "string") {
     return Promise.resolve({ status: 200, json: {} });

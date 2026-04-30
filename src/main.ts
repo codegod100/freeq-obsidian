@@ -21,6 +21,15 @@ export default class FreeQPlugin extends Plugin {
   async onload() {
     await this.loadSettings();
     this.client = new IRCClient();
+    if (this.settings.lastChannel) {
+      this.client.activeChannel = this.settings.lastChannel;
+    }
+    this.client.onActiveChannelChange = (channel) => {
+      if (channel && channel !== this.settings.lastChannel) {
+        this.settings.lastChannel = channel;
+        void this.saveSettings();
+      }
+    };
     this.clipper = new Clipper(this.app, this.settings);
     this.oauth = new OAuthHandler();
 
@@ -37,6 +46,7 @@ export default class FreeQPlugin extends Plugin {
         if (session) {
           this.settings.oauthSession = session;
           this.settings.did = session.did;
+          this.settings.lastHandle = session.handle;
           this.saveSettings();
           new Notice("Authentication completed! Connecting…");
           // Auto-connect using the fresh session
@@ -56,6 +66,12 @@ export default class FreeQPlugin extends Plugin {
       id: "open-freeq-chat",
       name: "Open chat sidebar",
       callback: () => this.activateView(),
+    });
+
+    this.addCommand({
+      id: "open-freeq-chat-popout",
+      name: "Open chat in popout window",
+      callback: () => this.openChatInPopout(),
     });
 
     this.addCommand({
@@ -137,6 +153,7 @@ export default class FreeQPlugin extends Plugin {
     );
     this.settings.oauthSession = session;
     this.settings.did = session.did;
+    this.settings.lastHandle = session.handle;
     await this.saveSettings();
   }
 
@@ -175,6 +192,7 @@ export default class FreeQPlugin extends Plugin {
           handle: refreshed.handle,
           createdAt: Date.now(),
         };
+        this.settings.lastHandle = refreshed.handle;
         await this.saveSettings();
         token = refreshed.token;
         method = "web-token";
@@ -340,40 +358,49 @@ export default class FreeQPlugin extends Plugin {
       return null;
     }
 
-    // Need OAuth session for DID and to have pushed PDS creds to server
     const did = this.settings.oauthSession?.did || this.settings.did;
     if (!did) {
       new Notice("Not authenticated. Log in via OAuth first.");
       return null;
     }
 
-    // Server URL for the upload endpoint (convert wss:// to https://)
     const wsUrl = this.settings.serverUrl;
     if (!wsUrl) {
       new Notice("FreeQ server URL not configured.");
       return null;
     }
-    const serverUrl = wsUrl.replace(/^wss:\/\//, "https://").replace(/^ws:\/\//, "http://").replace(/\/irc$/, "");
 
-    console.warn("[freeq] uploading blob", {
-      filename: filename || "paste.png",
-      mimeType: blob.type || "application/octet-stream",
-      hasAuthToken: !!this.settings.oauthSession?.webToken,
-      serverUrl,
-      did,
-    });
+    const serverUrl = wsUrl.replace(/^wss:\/\//, "https://").replace(/^ws:\/\//, "http://").replace(/\/irc$/, "");
+    const content = new Uint8Array(await blob.arrayBuffer());
+    const name = filename || "paste.png";
+    const type = blob.type || "application/octet-stream";
+
+    // The server identifies us by the active IRC session (session_dids).
+    // It uses its own cached PDS credentials to proxy the upload.
+    console.warn("[freeq] uploading blob", { filename: name, mimeType: type, did });
 
     try {
-      const result = await uploadBlobViaFreeQ({
-        serverUrl,
-        did,
-        authToken: this.settings.oauthSession?.webToken,
-        content: new Uint8Array(await blob.arrayBuffer()),
-        filename: filename || "paste.png",
-        mimeType: blob.type || "application/octet-stream",
-      });
+      const result = await uploadBlobViaFreeQ({ serverUrl, did, content, filename: name, mimeType: type });
       return result.url;
     } catch (err) {
+      if (err instanceof BlobUploadError && err.status === 401) {
+        // Server's cached PDS token expired. Reconnect to refresh it.
+        console.warn("[freeq] upload 401 — reconnecting to refresh server PDS session");
+        new Notice("Server session expired — reconnecting…");
+        try {
+          this.client.disconnect();
+          this.connect();
+          await this.client.waitForRegistration();
+          // Retry once after reconnect
+          const retry = await uploadBlobViaFreeQ({ serverUrl, did, content, filename: name, mimeType: type });
+          return retry.url;
+        } catch (retryErr) {
+          console.error("[freeq] upload retry after reconnect failed:", retryErr);
+          new Notice("Upload failed after reconnect. Try again.");
+          return null;
+        }
+      }
+
       if (err instanceof BlobUploadError) {
         const body = typeof err.body === "string" ? null : err.body;
         const stepUpUrl = body?.error === "step_up_required" ? body.step_up_url : null;
@@ -383,12 +410,6 @@ export default class FreeQPlugin extends Plugin {
           if (!stepUp.searchParams.has("did")) {
             stepUp.searchParams.set("did", did);
           }
-          console.warn("[freeq] upload step-up required", {
-            did,
-            stepUpUrl: resolvedStepUpUrl,
-            finalStepUpUrl: stepUp.toString(),
-            message: body?.message,
-          });
           this.openExternalUrl(stepUp.toString());
           new Notice("Complete the upload approval in your browser, then paste again.");
           return null;
@@ -430,6 +451,17 @@ export default class FreeQPlugin extends Plugin {
     if (leaf) {
       workspace.revealLeaf(leaf);
     }
+  }
+
+  async openChatInPopout() {
+    const { workspace } = this.app;
+    const preferredChannel = this.client.activeChannel || this.settings.lastChannel;
+    if (preferredChannel) {
+      this.client.activeChannel = preferredChannel;
+    }
+    const leaf = workspace.openPopoutLeaf();
+    await leaf.setViewState({ type: VIEW_TYPE_FREEQ, active: true });
+    workspace.revealLeaf(leaf);
   }
 
   // ── Broker token refresh ──

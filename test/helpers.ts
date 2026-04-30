@@ -9,6 +9,7 @@ export function createTestPlugin(overrides: Partial<typeof DEFAULT_SETTINGS> = {
     workspace: {
       getLeavesOfType: vi.fn(() => []),
       getRightLeaf: vi.fn(() => null),
+      openPopoutLeaf: vi.fn(() => ({ setViewState: vi.fn(async () => {}) })),
       revealLeaf: vi.fn(),
     } as any,
     vault: {
@@ -28,6 +29,14 @@ export function createTestPlugin(overrides: Partial<typeof DEFAULT_SETTINGS> = {
 
   // Manually init fields normally set in onload()
   plugin.client = new IRCClient();
+  if (plugin.settings.lastChannel) {
+    plugin.client.activeChannel = plugin.settings.lastChannel;
+  }
+  plugin.client.onActiveChannelChange = (channel) => {
+    if (channel && channel !== plugin.settings.lastChannel) {
+      plugin.settings.lastChannel = channel;
+    }
+  };
   plugin.clipper = {} as any;
   plugin.oauth = new OAuthHandler();
 
