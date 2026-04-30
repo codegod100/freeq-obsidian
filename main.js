@@ -36,9 +36,11 @@ var DEFAULT_SETTINGS = {
   callbackUrl: "https://codegod100.github.io/freeq-obsidian/oauth-callback.html",
   nick: "",
   did: "",
+  lastHandle: "",
   appPassword: "",
   pdsUrl: "https://bsky.social",
   autoJoinChannels: "#general",
+  lastChannel: "",
   clipFolder: "FreeQ Clippings",
   clipTemplate: `> {{text}}
 > \u2014 @{{from}} in {{channel}}, {{timestamp}}
@@ -390,7 +392,17 @@ var IRCClient = class {
   saslMethod = "";
   // Channels
   channels = /* @__PURE__ */ new Map();
-  activeChannel = "";
+  _activeChannel = "";
+  onActiveChannelChange = null;
+  get activeChannel() {
+    return this._activeChannel;
+  }
+  set activeChannel(channel) {
+    const next = channel.trim();
+    if (next === this._activeChannel) return;
+    this._activeChannel = next;
+    this.onActiveChannelChange?.(next);
+  }
   serverMessages = [];
   // Batches (CHATHISTORY)
   batches = /* @__PURE__ */ new Map();
@@ -445,6 +457,28 @@ var IRCClient = class {
     return () => {
       this.listeners = this.listeners.filter((l) => l !== fn);
     };
+  }
+  /** Returns a promise that resolves when the server sends 001 (registered).
+   *  Rejects after timeoutMs if registration never completes. */
+  waitForRegistration(timeoutMs = 3e4) {
+    if (this.registered) return Promise.resolve(this.nick);
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        remove();
+        reject(new Error("Registration timed out"));
+      }, timeoutMs);
+      const remove = this.addListener((ev) => {
+        if (ev.type === "registered") {
+          clearTimeout(timer);
+          remove();
+          resolve(ev.nick);
+        } else if (ev.type === "state" && ev.state === "disconnected") {
+          clearTimeout(timer);
+          remove();
+          reject(new Error("Disconnected during registration"));
+        }
+      });
+    });
   }
   emit(ev) {
     for (const fn of this.listeners) {
@@ -1005,6 +1039,9 @@ var ChatView = class extends import_obsidian3.ItemView {
   showMembers = false;
   showChannelList = true;
   statusBase = "Disconnected";
+  topicEditing = false;
+  topicEditChannel = "";
+  topicDraft = "";
   replyBannerEl;
   replyingTo = null;
   constructor(leaf, plugin) {
@@ -1058,6 +1095,12 @@ var ChatView = class extends import_obsidian3.ItemView {
       attr: { title: "Toggle member list" }
     });
     this.toggleMembersBtn.addEventListener("click", () => this.toggleMembers());
+    const markReadBtn = headerActions.createEl("button", {
+      text: "\u2713",
+      cls: "freeq-btn-small",
+      attr: { title: "Mark all channels as read" }
+    });
+    markReadBtn.addEventListener("click", () => this.markAllRead());
     const joinBtn = headerActions.createEl("button", {
       text: "Join",
       cls: "freeq-btn-small"
@@ -1164,8 +1207,92 @@ var ChatView = class extends import_obsidian3.ItemView {
   // ── UI Actions ──
   updateHeader() {
     const channel = this.plugin.client.activeChannel?.trim();
-    const channelText = channel ? ` \xB7 ${channel}` : "";
-    this.statusEl.setText(`${this.statusBase}${channelText}`);
+    const ch = channel ? this.plugin.client.channels.get(channel.toLowerCase()) : void 0;
+    const topic = ch?.topic?.trim();
+    this.statusEl.empty();
+    this.statusEl.createSpan({ text: this.statusBase });
+    if (!channel) return;
+    this.statusEl.createSpan({ text: ` \xB7 ${channel}` });
+    if (!topic) return;
+    const topicWrap = this.statusEl.createSpan({ text: " \xB7 " });
+    if (this.topicEditing && this.topicEditChannel === channel) {
+      const input = topicWrap.createEl("input", {
+        cls: "freeq-topic-input",
+        attr: { type: "text", "aria-label": "Edit topic" }
+      });
+      input.style.width = "48ch";
+      input.style.maxWidth = "100%";
+      input.value = this.topicDraft;
+      input.addEventListener("input", () => {
+        this.topicDraft = input.value;
+      });
+      input.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          this.commitTopicEdit();
+        } else if (e.key === "Escape") {
+          e.preventDefault();
+          this.cancelTopicEdit();
+        }
+      });
+      input.addEventListener("blur", () => {
+        this.commitTopicEdit();
+      });
+      queueMicrotask(() => {
+        input.focus();
+        input.setSelectionRange(input.value.length, input.value.length);
+      });
+      return;
+    }
+    const topicEl = topicWrap.createSpan({ cls: "freeq-topic-text", text: topic });
+    topicEl.addClass("freeq-topic-clickable");
+    topicEl.setAttribute("role", "button");
+    topicEl.setAttribute("tabindex", "0");
+    topicEl.setAttribute("title", "Click to edit topic");
+    topicEl.addEventListener("click", () => {
+      this.startTopicEdit();
+    });
+    topicEl.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        this.startTopicEdit();
+      }
+    });
+  }
+  startTopicEdit() {
+    const channel = this.plugin.client.activeChannel?.trim();
+    if (!channel) return;
+    const ch = this.plugin.client.channels.get(channel.toLowerCase());
+    if (!ch || !ch.topic.trim()) return;
+    this.topicEditing = true;
+    this.topicEditChannel = channel;
+    this.topicDraft = ch.topic;
+    this.updateHeader();
+  }
+  commitTopicEdit() {
+    if (!this.topicEditing) return;
+    const channel = this.topicEditChannel;
+    const topic = this.topicDraft;
+    this.topicEditing = false;
+    this.topicEditChannel = "";
+    this.topicDraft = "";
+    if (!channel) {
+      this.updateHeader();
+      return;
+    }
+    const ch = this.plugin.client.channels.get(channel.toLowerCase());
+    if (ch) {
+      ch.topic = topic;
+    }
+    this.plugin.client.raw(`TOPIC ${channel} :${topic}`);
+    this.updateHeader();
+  }
+  cancelTopicEdit() {
+    if (!this.topicEditing) return;
+    this.topicEditing = false;
+    this.topicEditChannel = "";
+    this.topicDraft = "";
+    this.updateHeader();
   }
   updateStatus(state) {
     const map = {
@@ -1216,43 +1343,60 @@ var ChatView = class extends import_obsidian3.ItemView {
     this.cancelReply();
   }
   async handlePaste(e) {
-    const file = this.getPastedImage(e);
+    const file = await this.getPastedFile(e);
     if (!file) return;
     e.preventDefault();
     e.stopPropagation();
-    console.warn("[freeq] paste image", {
+    console.warn("[freeq] paste file", {
       name: file.name,
       type: file.type,
       size: file.size,
       channel: this.plugin.client.activeChannel
     });
     try {
-      const url = await this.plugin.uploadBlobToPds(file, file.name || "paste.png");
+      const url = await this.plugin.uploadBlobToPds(file, file.name || "paste.bin");
       if (!url) return;
       this.insertTextAtCursor(url);
-      new import_obsidian3.Notice("Pasted image uploaded.");
+      new import_obsidian3.Notice("Pasted file uploaded.");
     } catch (err) {
-      new import_obsidian3.Notice(`Image upload failed: ${err?.message || String(err)}`);
+      new import_obsidian3.Notice(`File upload failed: ${err?.message || String(err)}`);
     }
   }
-  getPastedImage(e) {
+  async getPastedFile(e) {
     const items = e.clipboardData?.items;
     if (items) {
       for (const item of items) {
         if (item.kind !== "file") continue;
         const file = item.getAsFile();
-        if (file && file.type.startsWith("image/")) return file;
+        if (file) return file;
       }
     }
-    const electron = window.require?.("electron");
-    const nativeImage = electron?.clipboard?.readImage?.();
-    if (nativeImage && !nativeImage.isEmpty?.()) {
-      const png = nativeImage.toPNG?.();
-      if (png?.length) {
-        return new File([png], `paste-${Date.now()}.png`, { type: "image/png" });
+    const clipboard = navigator.clipboard;
+    if (clipboard?.read) {
+      try {
+        const clipboardItems = await clipboard.read();
+        for (const item of clipboardItems) {
+          for (const type of item.types) {
+            const blob = await item.getType(type);
+            return new File([blob], `paste-${Date.now()}.${this.extensionForMime(type)}`, {
+              type
+            });
+          }
+        }
+      } catch (error) {
+        console.warn("[freeq] navigator clipboard read failed:", error);
       }
     }
     return null;
+  }
+  extensionForMime(type) {
+    if (type === "image/png") return "png";
+    if (type === "image/jpeg") return "jpg";
+    if (type === "image/webp") return "webp";
+    if (type === "image/gif") return "gif";
+    if (type === "text/plain") return "txt";
+    if (type === "application/pdf") return "pdf";
+    return "bin";
   }
   insertTextAtCursor(text) {
     const el = this.inputEl;
@@ -1325,6 +1469,12 @@ var ChatView = class extends import_obsidian3.ItemView {
   toggleChannelList() {
     this.showChannelList = !this.showChannelList;
     this.channelListEl.style.display = this.showChannelList ? "" : "none";
+  }
+  markAllRead() {
+    for (const ch of this.plugin.client.channels.values()) {
+      ch.unreadCount = 0;
+    }
+    this.renderChannelList();
   }
   // ── Rendering ──
   isActiveChannel(name) {
@@ -1574,7 +1724,8 @@ var ChatView = class extends import_obsidian3.ItemView {
       if (m.away) el.addClass("freeq-member-away");
     }
   }
-  renderTopic(topic) {
+  renderTopic(_topic) {
+    this.updateHeader();
   }
   scrollToBottom() {
     this.messageAreaEl.scrollTop = this.messageAreaEl.scrollHeight;
@@ -2087,7 +2238,7 @@ function concatBytes(...chunks) {
   return out;
 }
 async function uploadBlobViaFreeQ(opts) {
-  const { serverUrl, did, authToken, content, filename, mimeType } = opts;
+  const { serverUrl, did, content, filename, mimeType } = opts;
   const endpoint = serverUrl.replace(/\/$/, "") + "/api/v1/upload";
   const boundary = "----FreeQBlobBoundary" + Math.random().toString(36).slice(2);
   const name = filename || "note.md";
@@ -2118,7 +2269,6 @@ Content-Type: ${type}\r
     method: "POST",
     contentType: `multipart/form-data; boundary=${boundary}`,
     throw: false,
-    headers: authToken ? { Authorization: `Bearer ${authToken}` } : void 0,
     body: body.buffer.slice(body.byteOffset, body.byteOffset + body.byteLength)
   });
   if (res.status >= 400) {
@@ -2131,7 +2281,6 @@ Content-Type: ${type}\r
       status: res.status,
       filename: name,
       mimeType: type,
-      authToken: !!authToken,
       response: res.text.slice(0, 500),
       headers: res.headers
     });
@@ -2153,6 +2302,15 @@ var FreeQPlugin = class extends import_obsidian8.Plugin {
   async onload() {
     await this.loadSettings();
     this.client = new IRCClient();
+    if (this.settings.lastChannel) {
+      this.client.activeChannel = this.settings.lastChannel;
+    }
+    this.client.onActiveChannelChange = (channel) => {
+      if (channel && channel !== this.settings.lastChannel) {
+        this.settings.lastChannel = channel;
+        void this.saveSettings();
+      }
+    };
     this.clipper = new Clipper(this.app, this.settings);
     this.oauth = new OAuthHandler();
     this.registerView(VIEW_TYPE_FREEQ, (leaf) => new ChatView(leaf, this));
@@ -2166,6 +2324,7 @@ var FreeQPlugin = class extends import_obsidian8.Plugin {
         if (session) {
           this.settings.oauthSession = session;
           this.settings.did = session.did;
+          this.settings.lastHandle = session.handle;
           this.saveSettings();
           new import_obsidian8.Notice("Authentication completed! Connecting\u2026");
           this.connect();
@@ -2182,6 +2341,11 @@ var FreeQPlugin = class extends import_obsidian8.Plugin {
       id: "open-freeq-chat",
       name: "Open chat sidebar",
       callback: () => this.activateView()
+    });
+    this.addCommand({
+      id: "open-freeq-chat-popout",
+      name: "Open chat in popout window",
+      callback: () => this.openChatInPopout()
     });
     this.addCommand({
       id: "freeq-connect",
@@ -2250,6 +2414,7 @@ var FreeQPlugin = class extends import_obsidian8.Plugin {
     );
     this.settings.oauthSession = session;
     this.settings.did = session.did;
+    this.settings.lastHandle = session.handle;
     await this.saveSettings();
   }
   // ── Connection ──
@@ -2281,6 +2446,7 @@ var FreeQPlugin = class extends import_obsidian8.Plugin {
           handle: refreshed.handle,
           createdAt: Date.now()
         };
+        this.settings.lastHandle = refreshed.handle;
         await this.saveSettings();
         token = refreshed.token;
         method = "web-token";
@@ -2434,24 +2600,29 @@ var FreeQPlugin = class extends import_obsidian8.Plugin {
       return null;
     }
     const serverUrl = wsUrl.replace(/^wss:\/\//, "https://").replace(/^ws:\/\//, "http://").replace(/\/irc$/, "");
-    console.warn("[freeq] uploading blob", {
-      filename: filename || "paste.png",
-      mimeType: blob.type || "application/octet-stream",
-      hasAuthToken: !!this.settings.oauthSession?.webToken,
-      serverUrl,
-      did
-    });
+    const content = new Uint8Array(await blob.arrayBuffer());
+    const name = filename || "paste.png";
+    const type = blob.type || "application/octet-stream";
+    console.warn("[freeq] uploading blob", { filename: name, mimeType: type, did });
     try {
-      const result = await uploadBlobViaFreeQ({
-        serverUrl,
-        did,
-        authToken: this.settings.oauthSession?.webToken,
-        content: new Uint8Array(await blob.arrayBuffer()),
-        filename: filename || "paste.png",
-        mimeType: blob.type || "application/octet-stream"
-      });
+      const result = await uploadBlobViaFreeQ({ serverUrl, did, content, filename: name, mimeType: type });
       return result.url;
     } catch (err) {
+      if (err instanceof BlobUploadError && err.status === 401) {
+        console.warn("[freeq] upload 401 \u2014 reconnecting to refresh server PDS session");
+        new import_obsidian8.Notice("Server session expired \u2014 reconnecting\u2026");
+        try {
+          this.client.disconnect();
+          this.connect();
+          await this.client.waitForRegistration();
+          const retry = await uploadBlobViaFreeQ({ serverUrl, did, content, filename: name, mimeType: type });
+          return retry.url;
+        } catch (retryErr) {
+          console.error("[freeq] upload retry after reconnect failed:", retryErr);
+          new import_obsidian8.Notice("Upload failed after reconnect. Try again.");
+          return null;
+        }
+      }
       if (err instanceof BlobUploadError) {
         const body = typeof err.body === "string" ? null : err.body;
         const stepUpUrl = body?.error === "step_up_required" ? body.step_up_url : null;
@@ -2461,12 +2632,6 @@ var FreeQPlugin = class extends import_obsidian8.Plugin {
           if (!stepUp.searchParams.has("did")) {
             stepUp.searchParams.set("did", did);
           }
-          console.warn("[freeq] upload step-up required", {
-            did,
-            stepUpUrl: resolvedStepUpUrl,
-            finalStepUpUrl: stepUp.toString(),
-            message: body?.message
-          });
           this.openExternalUrl(stepUp.toString());
           new import_obsidian8.Notice("Complete the upload approval in your browser, then paste again.");
           return null;
@@ -2503,6 +2668,16 @@ var FreeQPlugin = class extends import_obsidian8.Plugin {
     if (leaf) {
       workspace.revealLeaf(leaf);
     }
+  }
+  async openChatInPopout() {
+    const { workspace } = this.app;
+    const preferredChannel = this.client.activeChannel || this.settings.lastChannel;
+    if (preferredChannel) {
+      this.client.activeChannel = preferredChannel;
+    }
+    const leaf = workspace.openPopoutLeaf();
+    await leaf.setViewState({ type: VIEW_TYPE_FREEQ, active: true });
+    workspace.revealLeaf(leaf);
   }
   // ── Broker token refresh ──
   async refreshBrokerToken(brokerToken) {

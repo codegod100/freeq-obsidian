@@ -17,6 +17,9 @@ export class ChatView extends ItemView {
   private showMembers = false;
   private showChannelList = true;
   private statusBase = "Disconnected";
+  private topicEditing = false;
+  private topicEditChannel = "";
+  private topicDraft = "";
   private replyBannerEl!: HTMLElement;
   private replyingTo: { id: string; from: string; preview: string } | null = null;
 
@@ -87,6 +90,13 @@ export class ChatView extends ItemView {
       attr: { title: "Toggle member list" },
     });
     this.toggleMembersBtn.addEventListener("click", () => this.toggleMembers());
+
+    const markReadBtn = headerActions.createEl("button", {
+      text: "✓",
+      cls: "freeq-btn-small",
+      attr: { title: "Mark all channels as read" },
+    });
+    markReadBtn.addEventListener("click", () => this.markAllRead());
 
     const joinBtn = headerActions.createEl("button", {
       text: "Join",
@@ -219,8 +229,105 @@ export class ChatView extends ItemView {
 
   private updateHeader() {
     const channel = this.plugin.client.activeChannel?.trim();
-    const channelText = channel ? ` · ${channel}` : "";
-    this.statusEl.setText(`${this.statusBase}${channelText}`);
+    const ch = channel ? this.plugin.client.channels.get(channel.toLowerCase()) : undefined;
+    const topic = ch?.topic?.trim();
+
+    this.statusEl.empty();
+    this.statusEl.createSpan({ text: this.statusBase });
+
+    if (!channel) return;
+
+    this.statusEl.createSpan({ text: ` · ${channel}` });
+
+    if (!topic) return;
+
+    const topicWrap = this.statusEl.createSpan({ text: " · " });
+    if (this.topicEditing && this.topicEditChannel === channel) {
+      const input = topicWrap.createEl("input", {
+        cls: "freeq-topic-input",
+        attr: { type: "text", "aria-label": "Edit topic" },
+      });
+      input.style.width = "48ch";
+      input.style.maxWidth = "100%";
+      input.value = this.topicDraft;
+      input.addEventListener("input", () => {
+        this.topicDraft = input.value;
+      });
+      input.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          this.commitTopicEdit();
+        } else if (e.key === "Escape") {
+          e.preventDefault();
+          this.cancelTopicEdit();
+        }
+      });
+      input.addEventListener("blur", () => {
+        this.commitTopicEdit();
+      });
+      queueMicrotask(() => {
+        input.focus();
+        input.setSelectionRange(input.value.length, input.value.length);
+      });
+      return;
+    }
+
+    const topicEl = topicWrap.createSpan({ cls: "freeq-topic-text", text: topic });
+    topicEl.addClass("freeq-topic-clickable");
+    topicEl.setAttribute("role", "button");
+    topicEl.setAttribute("tabindex", "0");
+    topicEl.setAttribute("title", "Click to edit topic");
+    topicEl.addEventListener("click", () => {
+      this.startTopicEdit();
+    });
+    topicEl.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        this.startTopicEdit();
+      }
+    });
+  }
+
+  private startTopicEdit() {
+    const channel = this.plugin.client.activeChannel?.trim();
+    if (!channel) return;
+    const ch = this.plugin.client.channels.get(channel.toLowerCase());
+    if (!ch || !ch.topic.trim()) return;
+
+    this.topicEditing = true;
+    this.topicEditChannel = channel;
+    this.topicDraft = ch.topic;
+    this.updateHeader();
+  }
+
+  private commitTopicEdit() {
+    if (!this.topicEditing) return;
+
+    const channel = this.topicEditChannel;
+    const topic = this.topicDraft;
+    this.topicEditing = false;
+    this.topicEditChannel = "";
+    this.topicDraft = "";
+
+    if (!channel) {
+      this.updateHeader();
+      return;
+    }
+
+    const ch = this.plugin.client.channels.get(channel.toLowerCase());
+    if (ch) {
+      ch.topic = topic;
+    }
+    this.plugin.client.raw(`TOPIC ${channel} :${topic}`);
+    this.updateHeader();
+  }
+
+  private cancelTopicEdit() {
+    if (!this.topicEditing) return;
+    this.topicEditing = false;
+    this.topicEditChannel = "";
+    this.topicDraft = "";
+    this.updateHeader();
   }
 
   private updateStatus(state: string) {
@@ -281,13 +388,13 @@ export class ChatView extends ItemView {
   }
 
   private async handlePaste(e: ClipboardEvent) {
-    const file = this.getPastedImage(e);
+    const file = await this.getPastedFile(e);
     if (!file) return;
 
     e.preventDefault();
     e.stopPropagation();
 
-    console.warn("[freeq] paste image", {
+    console.warn("[freeq] paste file", {
       name: file.name,
       type: file.type,
       size: file.size,
@@ -295,36 +402,54 @@ export class ChatView extends ItemView {
     });
 
     try {
-      const url = await this.plugin.uploadBlobToPds(file, file.name || "paste.png");
+      const url = await this.plugin.uploadBlobToPds(file, file.name || "paste.bin");
       if (!url) return;
 
       this.insertTextAtCursor(url);
-      new Notice("Pasted image uploaded.");
+      new Notice("Pasted file uploaded.");
     } catch (err: any) {
-      new Notice(`Image upload failed: ${err?.message || String(err)}`);
+      new Notice(`File upload failed: ${err?.message || String(err)}`);
     }
   }
 
-  private getPastedImage(e: ClipboardEvent): File | null {
+  private async getPastedFile(e: ClipboardEvent): Promise<File | null> {
     const items = e.clipboardData?.items;
     if (items) {
       for (const item of items) {
         if (item.kind !== "file") continue;
         const file = item.getAsFile();
-        if (file && file.type.startsWith("image/")) return file;
+        if (file) return file;
       }
     }
 
-    const electron = (window as any).require?.("electron");
-    const nativeImage = electron?.clipboard?.readImage?.();
-    if (nativeImage && !nativeImage.isEmpty?.()) {
-      const png = nativeImage.toPNG?.();
-      if (png?.length) {
-        return new File([png], `paste-${Date.now()}.png`, { type: "image/png" });
+    const clipboard = navigator.clipboard;
+    if (clipboard?.read) {
+      try {
+        const clipboardItems = await clipboard.read();
+        for (const item of clipboardItems) {
+          for (const type of item.types) {
+            const blob = await item.getType(type);
+            return new File([blob], `paste-${Date.now()}.${this.extensionForMime(type)}`, {
+              type,
+            });
+          }
+        }
+      } catch (error) {
+        console.warn("[freeq] navigator clipboard read failed:", error);
       }
     }
 
     return null;
+  }
+
+  private extensionForMime(type: string): string {
+    if (type === "image/png") return "png";
+    if (type === "image/jpeg") return "jpg";
+    if (type === "image/webp") return "webp";
+    if (type === "image/gif") return "gif";
+    if (type === "text/plain") return "txt";
+    if (type === "application/pdf") return "pdf";
+    return "bin";
   }
 
   private insertTextAtCursor(text: string) {
@@ -403,6 +528,13 @@ export class ChatView extends ItemView {
   private toggleChannelList() {
     this.showChannelList = !this.showChannelList;
     this.channelListEl.style.display = this.showChannelList ? "" : "none";
+  }
+
+  private markAllRead() {
+    for (const ch of this.plugin.client.channels.values()) {
+      ch.unreadCount = 0;
+    }
+    this.renderChannelList();
   }
 
   // ── Rendering ──
@@ -708,8 +840,8 @@ export class ChatView extends ItemView {
     }
   }
 
-  private renderTopic(topic: string) {
-    // Could show in a small bar above messages
+  private renderTopic(_topic: string) {
+    this.updateHeader();
   }
 
   private scrollToBottom() {

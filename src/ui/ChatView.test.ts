@@ -100,4 +100,89 @@ describe("ChatView", () => {
     expect(activeChannel).not.toBeNull();
     expect(activeChannel!.textContent).toContain("#general");
   });
+
+  it("shows the active channel topic in the header and updates it live", async () => {
+    const plugin = createTestPlugin();
+    plugin.client.connect("wss://irc.freeq.at/irc", "testuser");
+    const ws = MockWebSocket.instances.at(-1)!;
+    openAndRegister(ws);
+
+    plugin.client.join("#general");
+    ws.simulateMessage(":testuser!u@h JOIN #general\n");
+    ws.simulateMessage(":irc.freeq.at 332 testuser #general :Welcome to #general\n");
+    await vi.waitFor(() => expect(plugin.client.channels.get("#general")?.topic).toBe("Welcome to #general"));
+
+    const leaf = new WorkspaceLeaf();
+    const view = new ChatView(leaf, plugin);
+    await view.onOpen();
+
+    const statusEl = (view as any).statusEl as HTMLElement;
+    expect(statusEl.textContent).toContain("#general");
+    expect(statusEl.textContent).toContain("Welcome to #general");
+
+    ws.simulateMessage(":irc.freeq.at 332 testuser #general :New topic text\n");
+    await vi.waitFor(() => expect(statusEl.textContent).toContain("New topic text"));
+  });
+
+  it("makes the topic editable inline and saves on Enter", async () => {
+    const plugin = createTestPlugin();
+    plugin.client.connect("wss://irc.freeq.at/irc", "testuser");
+    const ws = MockWebSocket.instances.at(-1)!;
+    openAndRegister(ws);
+
+    plugin.client.join("#general");
+    ws.simulateMessage(":testuser!u@h JOIN #general\n");
+    ws.simulateMessage(":irc.freeq.at 332 testuser #general :Welcome to #general\n");
+    await vi.waitFor(() => expect(plugin.client.channels.get("#general")?.topic).toBe("Welcome to #general"));
+
+    const leaf = new WorkspaceLeaf();
+    const view = new ChatView(leaf, plugin);
+    await view.onOpen();
+
+    const statusEl = (view as any).statusEl as HTMLElement;
+    const topicEl = statusEl.querySelector(".freeq-topic-text") as HTMLElement;
+    expect(topicEl).not.toBeNull();
+    topicEl.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+
+    const getInput = () => statusEl.querySelector(".freeq-topic-input") as HTMLInputElement | null;
+    await vi.waitFor(() => expect(getInput()).not.toBeNull());
+    const input = getInput() as HTMLInputElement;
+    input.value = "New topic text";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+
+    expect(ws.send).toHaveBeenCalledWith(expect.stringContaining("TOPIC #general :New topic text\r\n"));
+    await vi.waitFor(() => expect(statusEl.textContent).toContain("New topic text"));
+  });
+
+  it("cancels inline topic editing on Escape", async () => {
+    const plugin = createTestPlugin();
+    plugin.client.connect("wss://irc.freeq.at/irc", "testuser");
+    const ws = MockWebSocket.instances.at(-1)!;
+    openAndRegister(ws);
+
+    plugin.client.join("#general");
+    ws.simulateMessage(":testuser!u@h JOIN #general\n");
+    ws.simulateMessage(":irc.freeq.at 332 testuser #general :Welcome to #general\n");
+    await vi.waitFor(() => expect(plugin.client.channels.get("#general")?.topic).toBe("Welcome to #general"));
+
+    const leaf = new WorkspaceLeaf();
+    const view = new ChatView(leaf, plugin);
+    await view.onOpen();
+
+    const statusEl = (view as any).statusEl as HTMLElement;
+    const before = ws.send.mock.calls.length;
+    const topicEl = statusEl.querySelector(".freeq-topic-text") as HTMLElement;
+    topicEl.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+
+    const getInput = () => statusEl.querySelector(".freeq-topic-input") as HTMLInputElement | null;
+    await vi.waitFor(() => expect(getInput()).not.toBeNull());
+    const input = getInput() as HTMLInputElement;
+    input.value = "Ignored topic";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+
+    await vi.waitFor(() => expect(statusEl.textContent).toContain("Welcome to #general"));
+    expect(ws.send.mock.calls.slice(before).some(([data]) => String(data).includes("TOPIC"))).toBe(false);
+  });
 });
